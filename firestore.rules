@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Dealership Vehicles Collection (Public showroom browsing & admin management)
+    match /vehicles/{vehicleId} {
+      allow read, write: if true;
+    }
+
+    // Customer Inquiries Collection (Public inquiries & showroom staff response)
+    match /inquiries/{inquiryId} {
+      allow read, write: if true;
+    }
+
+    // Dealership Admins Collection
+    match /admins/{adminId} {
+      allow read, write: if true;
+    }
+
+    // Connection testing
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // Fallback deny for all other unknown paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
+

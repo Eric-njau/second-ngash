@@ -1,0 +1,6 @@
+{
+  "name": "Ng'ang'a Car Sales",
+  "description": "Premier car sales dealership in Kenya featuring searchable inventory, high-quality foreign and locally used vehicles with transparent pricing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

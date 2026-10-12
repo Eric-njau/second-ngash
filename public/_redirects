@@ -1,0 +1,4 @@
+/ngashkrd2012      /index.html   200!
+/ngashkrd2012/     /index.html   200!
+/ngashkrd2012/*    /index.html   200!
+/*                 /index.html   200

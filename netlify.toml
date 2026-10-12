@@ -1,0 +1,21 @@
+[build]
+  publish = "dist"
+  command = "npm run build"
+
+[[redirects]]
+  from = "/ngashkrd2012"
+  to = "/index.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/ngashkrd2012/*"
+  to = "/index.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+

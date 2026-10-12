@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "Showroom vehicle inventory listing",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique vehicle identifier" },
+        "title": { "type": "string", "description": "Vehicle display title" },
+        "brand": { "type": "string", "description": "Vehicle brand manufacturer" },
+        "model": { "type": "string", "description": "Vehicle model name" },
+        "year": { "type": "number", "description": "Model manufacture year" },
+        "priceKsh": { "type": "number", "description": "Asking price in Kenyan Shillings" },
+        "condition": { "type": "string", "description": "Vehicle condition", "enum": ["Foreign Used", "Locally Used", "Brand New", "ALL"] },
+        "transmission": { "type": "string", "description": "Gearbox type", "enum": ["Automatic", "Manual"] },
+        "fuelType": { "type": "string", "description": "Engine fuel type", "enum": ["Petrol", "Diesel", "Hybrid", "Electric"] },
+        "engineCapacity": { "type": "string", "description": "Engine displacement" },
+        "mileageKm": { "type": "number", "description": "Odometer reading in kilometers" },
+        "bodyType": { "type": "string", "description": "Vehicle body style" },
+        "color": { "type": "string", "description": "Exterior paint color" },
+        "image": { "type": "string", "description": "Primary vehicle cover image URL" },
+        "images": { "type": "array", "description": "Gallery photos of the vehicle" },
+        "description": { "type": "string", "description": "Detailed vehicle features and condition notes" },
+        "status": { "type": "string", "description": "Availability status", "enum": ["available", "under_offer", "sold"] },
+        "isLuxury": { "type": "boolean", "description": "Whether vehicle belongs to NG'ANG'A PREMIUM LUXURY" },
+        "createdAt": { "type": "string", "description": "Timestamp of listing creation" },
+        "updatedAt": { "type": "string", "description": "Timestamp of last modification" }
+      },
+      "required": ["id", "title", "brand", "year", "priceKsh", "condition", "transmission", "image"]
+    },
+    "Inquiry": {
+      "title": "Inquiry",
+      "description": "Customer lead or test-drive inquiry",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique inquiry identifier" },
+        "name": { "type": "string", "description": "Customer full name" },
+        "phone": { "type": "string", "description": "Customer phone number" },
+        "email": { "type": "string", "description": "Customer email address" },
+        "inquiryType": { "type": "string", "description": "Purpose of inquiry" },
+        "vehicleOfInterest": { "type": "string", "description": "Vehicle model or title customer asked about" },
+        "message": { "type": "string", "description": "Customer notes or message" },
+        "status": { "type": "string", "description": "Lead processing status", "enum": ["new", "contacted", "closed"] },
+        "createdAt": { "type": "string", "description": "Submission timestamp" }
+      },
+      "required": ["name", "phone", "createdAt"]
+    },
+    "Admin": {
+      "title": "Admin",
+      "description": "Authorized administrator record",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string", "description": "Admin email address" },
+        "role": { "type": "string", "description": "User privilege role", "enum": ["admin", "superadmin"] },
+        "createdAt": { "type": "string", "description": "Record creation timestamp" }
+      },
+      "required": ["uid", "email", "role"]
+    }
+  },
+  "firestore": {
+    "/vehicles/{vehicleId}": {
+      "schema": { "$ref": "#/entities/Vehicle" },
+      "description": "Showroom vehicle inventory documents"
+    },
+    "/inquiries/{inquiryId}": {
+      "schema": { "$ref": "#/entities/Inquiry" },
+      "description": "Customer leads and vehicle inquiries"
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/Admin" },
+      "description": "Authorized showroom administrators"
+    }
+  }
+}
