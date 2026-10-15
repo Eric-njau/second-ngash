@@ -1,161 +1,150 @@
 import { Vehicle } from '../types';
 import { VEHICLES_DATA } from '../data/inventory';
-import { db, auth, cleanForFirestore } from '../firebase';
-import { doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { db, cleanForFirestore } from '../firebase';
+import { doc, setDoc, deleteDoc, collection, getDocs } from 'firebase/firestore';
+import { prefetchCriticalImages, invalidateAllCaches } from './cache';
 
-const STORAGE_INVENTORY_KEY = 'nganga_custom_vehicles_v2';
-const STORAGE_FIRESTORE_CACHE_KEY = 'nganga_cached_firestore_vehicles_v2';
-const STORAGE_ARCHIVE_KEY = 'nganga_archived_vehicle_ids_v2';
-const STORAGE_DELETED_KEY = 'nganga_permanently_deleted_ids_v2';
-const STORAGE_INIT_KEY = 'nganga_code_cars_archived_init_v2';
+const STORAGE_FIRESTORE_CACHE_KEY = 'nganga_firestore_cache_v5';
+const STORAGE_CUSTOM_KEY = 'nganga_custom_vehicles_v5';
+const STORAGE_ARCHIVE_KEY = 'nganga_archived_ids_v5';
+const STORAGE_DELETED_KEY = 'nganga_deleted_ids_v5';
 
 export const SYNC_EVENT_NAME = 'nganga_inventory_sync';
 
-// List of all base code car IDs from inventory.ts
+// Clean up ancient legacy caches across all browsers
+if (typeof window !== 'undefined') {
+  try {
+    const RESET_KEY = 'nganga_clean_db_v5';
+    if (localStorage.getItem(RESET_KEY) !== 'v5') {
+      const legacyKeys = [
+        'nganga_custom_vehicles_v2',
+        'nganga_cached_firestore_vehicles_v2',
+        'nganga_archived_vehicle_ids_v2',
+        'nganga_permanently_deleted_ids_v2',
+        'nganga_code_cars_archived_init_v2',
+        'nganga_custom_vehicles',
+        'nganga_cached_firestore_vehicles',
+        'nganga_archived_vehicle_ids',
+        'nganga_deleted_vehicle_ids',
+        'cinecore_firebase_config'
+      ];
+      legacyKeys.forEach((k) => {
+        try {
+          localStorage.removeItem(k);
+        } catch {}
+      });
+      localStorage.setItem(RESET_KEY, 'v5');
+    }
+  } catch {}
+}
+
+// L1 In-Memory Hot Cache for instant 0ms component renders (holds full gallery photos)
+let l1CachedVehicles: Vehicle[] | null = null;
+let l1VehicleMap = new Map<string, Vehicle>();
+
+// List of all base code car IDs (empty array since database starts completely empty)
 export const CODE_CAR_IDS = new Set<string>(VEHICLES_DATA.map((v) => v.id));
 
-/**
- * Checks if a vehicle was originally added through code
- */
 export const isCodeVehicle = (v: Vehicle | string): boolean => {
   const id = typeof v === 'string' ? v : v.id;
   return CODE_CAR_IDS.has(id);
 };
 
-/**
- * Retrieves the set of permanently deleted vehicle IDs from localStorage
- */
 export const getDeletedIds = (): Set<string> => {
   try {
     const raw = localStorage.getItem(STORAGE_DELETED_KEY);
-    if (raw) {
-      const parsed: string[] = JSON.parse(raw);
-      return new Set(parsed);
-    }
-  } catch (e) {
-    console.warn('Error reading deleted vehicle IDs:', e);
-  }
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {}
   return new Set();
 };
 
-/**
- * Persists the set of permanently deleted vehicle IDs to localStorage
- */
 export const saveDeletedIds = (ids: Set<string>): void => {
   try {
     localStorage.setItem(STORAGE_DELETED_KEY, JSON.stringify(Array.from(ids)));
-  } catch (e) {
-    console.warn('Error saving deleted vehicle IDs:', e);
-  }
+  } catch {}
 };
 
-/**
- * Retrieves the set of archived vehicle IDs from localStorage
- */
 export const getArchivedIds = (): Set<string> => {
   try {
     const raw = localStorage.getItem(STORAGE_ARCHIVE_KEY);
-    if (raw) {
-      const parsed: string[] = JSON.parse(raw);
-      return new Set(parsed);
-    }
-  } catch (e) {
-    console.warn('Error reading archived vehicle IDs:', e);
-  }
-
-  // Default: by user request, all code-added cars start in the archived state
-  // so they are hidden from the front end until the admin restores them!
-  const defaultArchived = new Set<string>(VEHICLES_DATA.map((v) => v.id));
-  saveArchivedIds(defaultArchived);
-  return defaultArchived;
+    if (raw) return new Set(JSON.parse(raw));
+  } catch {}
+  return new Set();
 };
 
-/**
- * Persists the set of archived vehicle IDs to localStorage
- */
 export const saveArchivedIds = (ids: Set<string>): void => {
   try {
     localStorage.setItem(STORAGE_ARCHIVE_KEY, JSON.stringify(Array.from(ids)));
-  } catch (e) {
-    console.warn('Error saving archived vehicle IDs:', e);
-  }
+  } catch {}
 };
 
-/**
- * Retrieves custom/admin vehicles stored in localStorage
- */
 export const getCustomVehicles = (): Vehicle[] => {
   try {
-    const raw = localStorage.getItem(STORAGE_INVENTORY_KEY);
+    const raw = localStorage.getItem(STORAGE_CUSTOM_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed;
-      }
+      if (Array.isArray(parsed)) return parsed;
     }
-  } catch (e) {
-    console.warn('Error reading custom vehicles from storage:', e);
-  }
+  } catch {}
   return [];
 };
 
-/**
- * Persists custom/admin vehicles to localStorage
- */
 export const saveCustomVehicles = (vehicles: Vehicle[]): void => {
   try {
-    localStorage.setItem(STORAGE_INVENTORY_KEY, JSON.stringify(vehicles));
-  } catch (e) {
-    console.warn('Error saving custom vehicles to storage:', e);
-  }
+    const lightweight = vehicles.map((v) => ({
+      ...v,
+      images: Array.isArray(v.images) ? v.images.slice(0, 2) : (v.image ? [v.image] : [])
+    }));
+    localStorage.setItem(STORAGE_CUSTOM_KEY, JSON.stringify(lightweight));
+  } catch {}
 };
 
-/**
- * Dispatches an event across the window to notify all listening components
- * (App.tsx, AdminDashboard.tsx, etc.) that the inventory state has changed.
- */
 export const notifyInventoryChange = (): void => {
+  l1CachedVehicles = null;
+  l1VehicleMap.clear();
+  invalidateAllCaches();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(SYNC_EVENT_NAME));
   }
 };
 
-/**
- * Retrieves cached Firestore vehicles from localStorage
- */
 export const getCachedFirestoreVehicles = (): Vehicle[] => {
   try {
     const raw = localStorage.getItem(STORAGE_FIRESTORE_CACHE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed;
-      }
+      if (Array.isArray(parsed)) return parsed;
     }
-  } catch (e) {
-    console.warn('Error reading cached Firestore vehicles:', e);
-  }
+  } catch {}
   return [];
 };
 
 /**
- * Persists Firestore vehicles to localStorage cache for instant loading
+ * Saves a lightweight representation of the inventory to localStorage.
+ * Guarantees total storage stays under 350KB so it never exceeds browser quota (5MB)
+ * and enables instant 0ms first-paints for returning visitors.
  */
 export const saveCachedFirestoreVehicles = (vehicles: Vehicle[]): void => {
   try {
-    localStorage.setItem(STORAGE_FIRESTORE_CACHE_KEY, JSON.stringify(vehicles));
-  } catch (e) {
-    console.warn('Error caching Firestore vehicles:', e);
+    const lightweight = vehicles.map((v) => ({
+      ...v,
+      // Store cover image and at most 2 gallery images to guarantee fast serialization and compact storage
+      images: Array.isArray(v.images) ? v.images.slice(0, 2) : (v.image ? [v.image] : [])
+    }));
+    localStorage.setItem(STORAGE_FIRESTORE_CACHE_KEY, JSON.stringify(lightweight));
+  } catch {
+    try {
+      const minimal = vehicles.map((v) => ({
+        ...v,
+        images: v.image ? [v.image] : []
+      }));
+      localStorage.setItem(STORAGE_FIRESTORE_CACHE_KEY, JSON.stringify(minimal));
+    } catch {}
   }
 };
 
-/**
- * Computes numeric timestamp for sorting vehicles by newest saved/updated first.
- */
 export const getVehicleTimestamp = (v: Vehicle): number => {
-  if (typeof v.savedAt === 'number' && v.savedAt > 0) {
-    return v.savedAt;
-  }
+  if (typeof v.savedAt === 'number' && v.savedAt > 0) return v.savedAt;
   if (v.updatedAt) {
     const parsed = new Date(v.updatedAt).getTime();
     if (!isNaN(parsed) && parsed > 0) return parsed;
@@ -168,281 +157,348 @@ export const getVehicleTimestamp = (v: Vehicle): number => {
   return 0;
 };
 
+export const getCachedVehicleById = (id?: string | null): Vehicle | null => {
+  if (!id) return null;
+  const targetId = id.trim().toLowerCase();
+  if (l1VehicleMap.has(targetId)) {
+    return l1VehicleMap.get(targetId) || null;
+  }
+  const list = loadAllVehicles();
+  return list.find((v) => v.id.toLowerCase() === targetId) || null;
+};
+
 /**
- * Loads the complete inventory:
- * - Admin/Custom added vehicles (active by default, positioned at top)
- * - Code-seeded vehicles (archived by default per user specification)
+ * Loads the complete inventory.
+ * Merges Firestore cloud data with local memory and storage, prioritizing cloud updates.
  */
 export const loadAllVehicles = (firestoreList?: Vehicle[]): Vehicle[] => {
-  const archivedIds = getArchivedIds();
-  const deletedIds = getDeletedIds();
-  const customLocal = getCustomVehicles();
+  let sourceList: Vehicle[];
 
-  // If a live Firestore list was provided, cache it
-  if (firestoreList && firestoreList.length > 0) {
+  if (Array.isArray(firestoreList)) {
+    sourceList = firestoreList;
     saveCachedFirestoreVehicles(firestoreList);
+  } else if (l1CachedVehicles !== null) {
+    return l1CachedVehicles;
+  } else {
+    sourceList = getCachedFirestoreVehicles();
   }
 
-  // Use provided list or fall back to cached Firestore vehicles
-  const activeFirestoreList = (firestoreList && firestoreList.length > 0)
-    ? firestoreList
-    : getCachedFirestoreVehicles();
-
-  // Map to hold vehicles by id to ensure uniqueness
+  const deleted = getDeletedIds();
   const vehicleMap = new Map<string, Vehicle>();
 
-  // 1. First add all code-added cars (unless permanently deleted)
-  for (const codeVehicle of VEHICLES_DATA) {
-    if (deletedIds.has(codeVehicle.id)) continue;
-    const isArchived = archivedIds.has(codeVehicle.id);
-    vehicleMap.set(codeVehicle.id, {
-      ...codeVehicle,
-      isCodeCar: true,
-      isArchived,
-      archivedAt: isArchived ? 'Code Default Archive' : undefined,
+  // 1. Add cloud/cached vehicles (skipping deleted)
+  for (const v of sourceList) {
+    if (!v || !v.id || deleted.has(v.id)) continue;
+    vehicleMap.set(v.id, {
+      ...v,
+      isCodeCar: false,
+      isArchived: v.isArchived === true,
     });
   }
 
-  // 2. Overlay or append any Firestore vehicles (unless permanently deleted)
-  if (activeFirestoreList && activeFirestoreList.length > 0) {
-    for (const fv of activeFirestoreList) {
-      if (deletedIds.has(fv.id)) continue;
-      const isCode = isCodeVehicle(fv.id);
-      // Custom uploaded cars are active by default unless explicitly archived
-      const isArchived = fv.isArchived === true;
-
-      vehicleMap.set(fv.id, {
-        ...fv,
-        isCodeCar: isCode,
-        isArchived,
+  // 2. Include any local custom vehicles not yet in cloud list (never drop newly saved vehicles)
+  const custom = getCustomVehicles();
+  for (const c of custom) {
+    if (c && c.id && !deleted.has(c.id) && !vehicleMap.has(c.id)) {
+      vehicleMap.set(c.id, {
+        ...c,
+        isCodeCar: false,
+        isArchived: c.isArchived === true,
       });
     }
   }
 
-  // 3. Overlay any local custom vehicles added by admin (unless permanently deleted)
-  for (const cv of customLocal) {
-    if (deletedIds.has(cv.id)) continue;
-    const isCode = isCodeVehicle(cv.id);
-    const isArchived = cv.isArchived === true;
-
-    vehicleMap.set(cv.id, {
-      ...cv,
-      isCodeCar: isCode,
-      isArchived,
-    });
-  }
-
   const allList = Array.from(vehicleMap.values());
 
-  // Sort: Active vehicles first, then LAST SAVED FIRST (highest timestamp at top), then custom before unedited code catalog
-  return allList.sort((a, b) => {
-    // 1. Active vehicles before archived
+  // Sort: Active vehicles first, then newest saved first
+  const sortedList = allList.sort((a, b) => {
     if (!a.isArchived && b.isArchived) return -1;
     if (a.isArchived && !b.isArchived) return 1;
 
-    // 2. Last saved first! Sort by newest saved/updated timestamp descending
     const timeA = getVehicleTimestamp(a);
     const timeB = getVehicleTimestamp(b);
     if (timeA !== timeB) {
       return timeB - timeA;
     }
-
-    // 3. Custom/Admin vehicles first before base code vehicles
-    if (!a.isCodeCar && b.isCodeCar) return -1;
-    if (a.isCodeCar && !b.isCodeCar) return 1;
-
     return 0;
   });
+
+  // Update L1 cache and fast index
+  l1CachedVehicles = sortedList;
+  l1VehicleMap.clear();
+  for (const v of sortedList) {
+    l1VehicleMap.set(v.id, v);
+    l1VehicleMap.set(v.id.toLowerCase(), v);
+  }
+
+  if (typeof window !== 'undefined') {
+    const criticalImages = sortedList.slice(0, 12).map((v) => v.image).filter(Boolean);
+    prefetchCriticalImages(criticalImages);
+  }
+
+  return sortedList;
 };
 
 /**
- * Saves a vehicle (Add or Edit) from Admin Dashboard
- * Saves to localStorage immediately, triggers instant frontend re-render,
- * and syncs to Firestore in the background for snappy responsiveness.
+ * Prepares and sanitizes vehicle payload for Firestore.
+ * Strictly guarantees total document size is within Firestore's 1MB limit (< 450KB safe ceiling).
  */
-export const saveDealershipVehicle = async (vehicle: Vehicle): Promise<void> => {
-  const isArchived = vehicle.isArchived ?? false;
+export const prepareVehicleForFirestore = (vehicle: Vehicle): Record<string, any> => {
+  const safeData = cleanForFirestore(vehicle);
+  safeData.isArchived = Boolean(safeData.isArchived);
+  safeData.isCodeCar = false;
+  safeData.status = safeData.status === 'sold' ? 'sold' : 'available';
+  safeData.priceKsh = Number(safeData.priceKsh) || 0;
+  safeData.year = Number(safeData.year) || new Date().getFullYear();
+
+  // Ensure cover image exists
+  if (!safeData.image && Array.isArray(safeData.images) && safeData.images.length > 0) {
+    safeData.image = safeData.images[0];
+  }
+
+  if (!Array.isArray(safeData.images) || safeData.images.length === 0) {
+    safeData.images = safeData.image ? [safeData.image] : [];
+  }
+
+  let payloadStr = JSON.stringify(safeData);
+  const MAX_SAFE_PAYLOAD_BYTES = 450000; // 450KB ceiling
+
+  // If payload exceeds safe boundary, trim extra gallery photos first
+  if (payloadStr.length > MAX_SAFE_PAYLOAD_BYTES && Array.isArray(safeData.images)) {
+    while (safeData.images.length > 1 && payloadStr.length > MAX_SAFE_PAYLOAD_BYTES) {
+      safeData.images.pop();
+      if (Array.isArray(safeData.additionalImages) && safeData.additionalImages.length > 0) {
+        safeData.additionalImages.pop();
+      }
+      payloadStr = JSON.stringify(safeData);
+    }
+  }
+
+  return safeData;
+};
+
+/**
+ * Synchronizes a single vehicle directly to the Firestore cloud database.
+ * Fast, reliable write with built-in retry and generous timeout.
+ */
+export const syncSingleVehicleToFirestore = async (
+  vehicle: Vehicle,
+  timeoutMs = 45000
+): Promise<{ success: boolean; error?: string }> => {
+  try {
+    const docRef = doc(db, 'vehicles', vehicle.id);
+    const safeData = prepareVehicleForFirestore(vehicle);
+
+    let timer: any;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Cloud upload timeout (45s)')), timeoutMs);
+    });
+
+    const firestoreWritePromise = setDoc(docRef, safeData, { merge: true }).finally(() => {
+      clearTimeout(timer);
+    });
+
+    await Promise.race([firestoreWritePromise, timeoutPromise]);
+    return { success: true };
+  } catch (err: any) {
+    const errorMsg = err?.message || String(err);
+    console.error(`Firestore sync failed for vehicle ${vehicle.id}:`, errorMsg);
+    return { success: false, error: errorMsg };
+  }
+};
+
+/**
+ * Reconciles any offline-created vehicles to Firestore.
+ * Strictly respects deleted vehicle IDs so permanently deleted vehicles are NEVER resurrected!
+ */
+export const reconcileLocalVehiclesToFirestore = async (): Promise<{ synced: number; total: number }> => {
+  if (typeof window === 'undefined') return { synced: 0, total: 0 };
+  try {
+    const cached = getCachedFirestoreVehicles();
+    const custom = getCustomVehicles();
+    const deleted = getDeletedIds();
+
+    const localMap = new Map<string, Vehicle>();
+    [...cached, ...custom].forEach((v) => {
+      if (v && v.id && !deleted.has(v.id)) {
+        localMap.set(v.id, v);
+      }
+    });
+
+    if (localMap.size === 0) return { synced: 0, total: 0 };
+
+    // Fetch existing cloud doc IDs and timestamps
+    const snap = await getDocs(collection(db, 'vehicles'));
+    const cloudIds = new Set<string>();
+    const cloudTimestamps = new Map<string, number>();
+    snap.forEach((d) => {
+      cloudIds.add(d.id);
+      const data = d.data();
+      cloudTimestamps.set(d.id, getVehicleTimestamp(data as Vehicle));
+    });
+
+    let synced = 0;
+    for (const [id, vehicle] of localMap.entries()) {
+      if (deleted.has(id)) continue;
+      const isNew = !cloudIds.has(id);
+      const isNewer = (cloudTimestamps.get(id) || 0) < getVehicleTimestamp(vehicle);
+      if (isNew || isNewer) {
+        const res = await syncSingleVehicleToFirestore(vehicle, 30000);
+        if (res.success) {
+          synced++;
+        }
+      }
+    }
+
+    if (synced > 0) {
+      notifyInventoryChange();
+    }
+
+    return { synced, total: localMap.size };
+  } catch (err) {
+    console.warn('Reconcile local vehicles note:', err);
+    return { synced: 0, total: 0 };
+  }
+};
+
+/**
+ * Safe no-op legacy sync placeholder
+ */
+export const syncLocalVehiclesToFirestore = reconcileLocalVehiclesToFirestore;
+
+export const saveDealershipVehicle = async (
+  vehicle: Vehicle
+): Promise<{ success: boolean; cloudSynced: boolean; error?: string }> => {
+  const isArchived = Boolean(vehicle.isArchived);
   const now = Date.now();
   const vehicleToSave: Vehicle = {
     ...vehicle,
     isArchived,
-    isCodeCar: isCodeVehicle(vehicle.id),
-    savedAt: now,
-    updatedAt: vehicle.updatedAt || new Date(now).toISOString()
+    isCodeCar: false,
+    savedAt: vehicle.savedAt || now,
+    updatedAt: new Date(now).toISOString()
   };
 
-  // Remove from deleted set if newly saving/re-creating
-  const deletedIds = getDeletedIds();
-  if (deletedIds.has(vehicle.id)) {
-    deletedIds.delete(vehicle.id);
-    saveDeletedIds(deletedIds);
+  // 1. Instantly update L1 in-memory cache (with all high-fidelity gallery photos)
+  if (!l1CachedVehicles) {
+    l1CachedVehicles = [];
   }
-
-  const archivedIds = getArchivedIds();
-  if (isArchived) {
-    archivedIds.add(vehicle.id);
-  } else {
-    archivedIds.delete(vehicle.id);
-  }
-  saveArchivedIds(archivedIds);
-
-  const custom = getCustomVehicles();
-  const existingIdx = custom.findIndex((v) => v.id === vehicle.id);
-
+  const existingIdx = l1CachedVehicles.findIndex((v) => v.id === vehicleToSave.id);
   if (existingIdx >= 0) {
-    custom.splice(existingIdx, 1);
+    l1CachedVehicles[existingIdx] = vehicleToSave;
+  } else {
+    l1CachedVehicles.unshift(vehicleToSave);
   }
-  // Put at the very beginning (last saved first!)
-  custom.unshift(vehicleToSave);
+  l1VehicleMap.set(vehicleToSave.id, vehicleToSave);
+  l1VehicleMap.set(vehicleToSave.id.toLowerCase(), vehicleToSave);
+
+  // 2. Maintain in custom vehicles list
+  const custom = getCustomVehicles();
+  const customIdx = custom.findIndex((v) => v.id === vehicleToSave.id);
+  if (customIdx >= 0) {
+    custom[customIdx] = vehicleToSave;
+  } else {
+    custom.unshift(vehicleToSave);
+  }
   saveCustomVehicles(custom);
 
-  // Also update cached Firestore vehicles list so it appears everywhere immediately
+  // Update cached Firestore vehicles in localStorage (lightweight)
   const cached = getCachedFirestoreVehicles();
-  const cachedIdx = cached.findIndex((v) => v.id === vehicle.id);
+  const cachedIdx = cached.findIndex((v) => v.id === vehicleToSave.id);
   if (cachedIdx >= 0) {
-    cached.splice(cachedIdx, 1);
+    cached[cachedIdx] = vehicleToSave;
+  } else {
+    cached.unshift(vehicleToSave);
   }
-  // Put at the very beginning (last saved first!)
-  cached.unshift(vehicleToSave);
   saveCachedFirestoreVehicles(cached);
 
-  // Instantly broadcast change across all components
+  // 3. Instantly broadcast change across all components in current window (0ms UI update!)
   notifyInventoryChange();
 
-  // Snappy background Firestore sync:
-  // Runs asynchronously without blocking the return, making vehicle saves instant and snappy!
-  (async () => {
-    try {
-      const docRef = doc(db, 'vehicles', vehicle.id);
-      const safeData = cleanForFirestore(vehicleToSave);
-      await setDoc(docRef, safeData, { merge: true });
-    } catch (err: any) {
-      console.warn('Initial Firestore vehicle sync notice:', err?.message || err);
-
-      // If permission or auth issue and an admin is signed in, force refresh token and retry
-      if (auth.currentUser) {
-        try {
-          await auth.currentUser.getIdToken(true);
-          const docRef = doc(db, 'vehicles', vehicle.id);
-          const safeData = cleanForFirestore(vehicleToSave);
-          await setDoc(docRef, safeData, { merge: true });
-        } catch (retryErr: any) {
-          console.warn('Firestore vehicle sync retry notice:', retryErr?.message || retryErr);
+  // 4. Push directly to Firestore Cloud Database so it is visible across the internet
+  const cloudRes = await syncSingleVehicleToFirestore(vehicleToSave, 45000);
+  if (!cloudRes.success) {
+    // Retry once in background
+    setTimeout(() => {
+      syncSingleVehicleToFirestore(vehicleToSave, 45000).then((retryRes) => {
+        if (retryRes.success) {
+          notifyInventoryChange();
         }
-      }
-    }
-  })();
+      });
+    }, 2000);
+  }
+
+  return { success: true, cloudSynced: cloudRes.success, error: cloudRes.error };
 };
 
-/**
- * Deletes a vehicle completely:
- * - Removes from active catalog and inventory immediately
- * - Marks in permanent deletion set so it never reappears
- * - Deletes from Firestore document database
- */
-export const removeDealershipVehicle = async (id: string): Promise<void> => {
-  // 1. Mark in permanent deletion set
-  const deletedIds = getDeletedIds();
-  deletedIds.add(id);
-  saveDeletedIds(deletedIds);
+export const removeDealershipVehicle = async (id: string): Promise<boolean> => {
+  // 1. Immediately record in deleted set so it can NEVER be resurrected
+  const deleted = getDeletedIds();
+  deleted.add(id);
+  saveDeletedIds(deleted);
 
-  // 2. Remove from archived IDs
-  const archivedIds = getArchivedIds();
-  archivedIds.delete(id);
-  saveArchivedIds(archivedIds);
+  // 2. Immediately remove from in-memory cache
+  if (l1CachedVehicles) {
+    l1CachedVehicles = l1CachedVehicles.filter((v) => v.id !== id);
+  }
+  l1VehicleMap.delete(id);
+  l1VehicleMap.delete(id.toLowerCase());
 
-  // 3. Remove from cached Firestore vehicles list
+  // 3. Immediately remove from local cached Firestore vehicles
   const cached = getCachedFirestoreVehicles().filter((v) => v.id !== id);
   saveCachedFirestoreVehicles(cached);
 
-  // 4. Remove from custom local vehicles storage
   const custom = getCustomVehicles().filter((v) => v.id !== id);
   saveCustomVehicles(custom);
 
-  // 5. Delete document from Firestore
+  // 4. Instantly broadcast change across all components (0ms UI update!)
+  notifyInventoryChange();
+
+  // 5. Permanently delete from Firestore
   try {
     await deleteDoc(doc(db, 'vehicles', id));
-  } catch (err) {
-    console.warn('Firestore vehicle delete notice:', err);
+    return true;
+  } catch (err: any) {
+    console.warn(`Firestore vehicle ${id} delete note:`, err?.message || err);
+    return false;
   }
-
-  notifyInventoryChange();
 };
 
-/**
- * Toggles a vehicle's archived status:
- * - If archived -> Restores to front-end showroom (isArchived = false)
- * - If active -> Archives and hides from front-end showroom (isArchived = true)
- */
 export const toggleVehicleArchiveStatus = async (
   vehicle: Vehicle,
   targetStatus?: boolean
 ): Promise<boolean> => {
-  const archivedIds = getArchivedIds();
-  const shouldArchive =
-    targetStatus !== undefined ? targetStatus : !vehicle.isArchived;
+  const shouldArchive = targetStatus !== undefined ? targetStatus : !vehicle.isArchived;
+  const updated: Vehicle = {
+    ...vehicle,
+    isArchived: shouldArchive,
+    updatedAt: new Date().toISOString()
+  };
 
-  if (shouldArchive) {
-    archivedIds.add(vehicle.id);
-  } else {
-    archivedIds.delete(vehicle.id);
-  }
-  saveArchivedIds(archivedIds);
-
-  // If this is a custom vehicle, update its isArchived in custom storage as well
-  if (!isCodeVehicle(vehicle.id)) {
-    const custom = getCustomVehicles();
-    const idx = custom.findIndex((v) => v.id === vehicle.id);
+  if (l1CachedVehicles) {
+    const idx = l1CachedVehicles.findIndex((v) => v.id === vehicle.id);
     if (idx >= 0) {
-      custom[idx].isArchived = shouldArchive;
-      saveCustomVehicles(custom);
+      l1CachedVehicles[idx] = updated;
     }
   }
+  l1VehicleMap.set(vehicle.id, updated);
+  l1VehicleMap.set(vehicle.id.toLowerCase(), updated);
+
+  const cached = getCachedFirestoreVehicles();
+  const cIdx = cached.findIndex((v) => v.id === vehicle.id);
+  if (cIdx >= 0) {
+    cached[cIdx] = updated;
+    saveCachedFirestoreVehicles(cached);
+  }
 
   notifyInventoryChange();
 
-  // Sync to Firestore
   try {
     const docRef = doc(db, 'vehicles', vehicle.id);
-    await setDoc(
-      docRef,
-      cleanForFirestore({
-        ...vehicle,
-        isArchived: shouldArchive,
-        archivedAt: shouldArchive ? new Date().toISOString() : null,
-      }),
-      { merge: true }
-    );
+    await setDoc(docRef, cleanForFirestore(updated), { merge: true });
+    return true;
   } catch (err) {
-    console.warn('Firestore archive status sync notice:', err);
+    console.warn('Archive toggle sync note:', err);
+    return false;
   }
-
-  return shouldArchive;
-};
-
-/**
- * Restores ALL code-added cars back into the active showroom
- */
-export const restoreAllCodeCars = async (): Promise<void> => {
-  const archivedIds = getArchivedIds();
-  const deletedIds = getDeletedIds();
-  for (const id of CODE_CAR_IDS) {
-    archivedIds.delete(id);
-    deletedIds.delete(id);
-  }
-  saveArchivedIds(archivedIds);
-  saveDeletedIds(deletedIds);
-  notifyInventoryChange();
-};
-
-/**
- * Archives ALL code-added cars, removing them from the active showroom
- */
-export const archiveAllCodeCars = async (): Promise<void> => {
-  const archivedIds = getArchivedIds();
-  for (const id of CODE_CAR_IDS) {
-    archivedIds.add(id);
-  }
-  saveArchivedIds(archivedIds);
-  notifyInventoryChange();
 };

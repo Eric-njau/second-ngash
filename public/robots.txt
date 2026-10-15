@@ -1,0 +1,11 @@
+# Googlebot and Global Web Crawlers Policy
+User-agent: *
+Allow: /
+Allow: /sitemap.xml
+Disallow: /ngashkrd2012
+Disallow: /ngashkrd2012/
+Disallow: /admin
+
+# Google Sitemap Location
+Sitemap: https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/sitemap.xml
+Sitemap: /sitemap.xml

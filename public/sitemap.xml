@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:xhtml="http://www.w3.org/1999/xhtml">
+
+  <!-- Primary Showroom Landing Page -->
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>daily</changefreq>
+    <priority>1.0</priority>
+  </url>
+
+  <!-- Luxury Vehicle Showcase -->
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?page=luxury</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.9</priority>
+  </url>
+
+  <!-- Automotive News & Kenya Buying Insights -->
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?page=news</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- Dealership Location & Contact -->
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?page=contact</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.8</priority>
+  </url>
+
+  <!-- Legal Pages -->
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?page=privacy</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?page=terms</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>yearly</changefreq>
+    <priority>0.3</priority>
+  </url>
+
+  <!-- Verified Vehicle Listings in Nairobi Showroom -->
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=mercedes-benz-s500-2021</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Mercedes-Benz S-Class S500</image:title>
+      <image:caption>2021 Mercedes-Benz S-Class S500 for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-land-cruiser-300-2026</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota Land Cruiser 300 / 250</image:title>
+      <image:caption>2026 Toyota Land Cruiser 300 / 250 for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=lexus-lc-500-coupe-2023</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Lexus LC 500 V8 Coupe</image:title>
+      <image:caption>2023 Lexus LC 500 V8 Coupe for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=lexus-lx570-v8-2016</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Lexus LX570 V8 Luxury SUV</image:title>
+      <image:caption>2016 Lexus LX570 V8 Luxury SUV for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=range-rover-sport-42-v8-2008</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Range Rover Sport Supercharged 4.2L V8</image:title>
+      <image:caption>2008 Range Rover Sport Supercharged 4.2L V8 for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=mercedes-benz-c200-2009</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Mercedes-Benz C200 Avantgarde</image:title>
+      <image:caption>2009 Mercedes-Benz C200 Avantgarde for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=mazda-cx5-2013-diesel</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Mazda CX-5 XD L-Package Clean Diesel</image:title>
+      <image:caption>2013 Mazda CX-5 XD L-Package Clean Diesel for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-coaster-2005-29seater</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota Coaster (29 Seater Commercial Bus)</image:title>
+      <image:caption>2005 Toyota Coaster (29 Seater Commercial Bus) for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-mark-x-grx130-2010</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota Mark X GRX 130 250G</image:title>
+      <image:caption>2010 Toyota Mark X GRX 130 250G for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=lexus-nx-300-2020</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Lexus NX 300 F-Sport AWD Turbo</image:title>
+      <image:caption>2020 Lexus NX 300 F-Sport AWD Turbo for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-lc76-2023</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota Land Cruiser 76 Overland Edition</image:title>
+      <image:caption>2023 Toyota Land Cruiser 76 Overland Edition for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=subaru-forester-2021-grey</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Subaru Forester SK9 Touring AWD</image:title>
+      <image:caption>2021 Subaru Forester SK9 Touring AWD for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-harrier-2019-white</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota Harrier Elegance Petrol</image:title>
+      <image:caption>2019 Toyota Harrier Elegance Petrol for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-voxy-2019-black</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota Voxy ZS Kirameki 8-Seater</image:title>
+      <image:caption>2019 Toyota Voxy ZS Kirameki 8-Seater for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-rav4-2019-black</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota RAV4 G-Package 4WD</image:title>
+      <image:caption>2019 Toyota RAV4 G-Package 4WD for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+  <url>
+    <loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/?vehicle=toyota-prado-vxl-2010-black</loc>
+    <lastmod>2026-10-14</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.85</priority>
+    <image:image>
+      <image:loc>https://ais-dev-wld2skjmwpubiy32hm56rj-199649616336.europe-west3.run.app/favicon.png</image:loc>
+      <image:title>Toyota Land Cruiser Prado VXL 4.0L V6</image:title>
+      <image:caption>2010 Toyota Land Cruiser Prado VXL 4.0L V6 for sale at Ng'ang'a Car Sales Kiambu Road Nairobi</image:caption>
+    </image:image>
+  </url>
+</urlset>

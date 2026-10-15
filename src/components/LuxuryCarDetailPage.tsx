@@ -3,6 +3,7 @@ import { F1Car } from '../data/f1rstMotorsData';
 import { DEALER_INFO } from '../data/inventory';
 import { NgangaExclusivesLogo } from './NgangaExclusivesLogo';
 import { ShareModal } from './ShareModal';
+import { updateSEO, injectJsonLd, removeJsonLd } from '../utils/seo';
 import { 
   ArrowLeft, 
   ChevronLeft, 
@@ -59,12 +60,64 @@ export const LuxuryCarDetailPage: React.FC<LuxuryCarDetailPageProps> = ({
   const [copiedLink, setCopiedLink] = useState(false);
   const [cardImageIndices, setCardImageIndices] = useState<Record<string, number>>({});
 
-  // Reset active photo when car changes
+  // Reset active photo and update dynamic SEO for luxury vehicle
   useEffect(() => {
     setActivePhotoIdx(0);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-    document.title = `${car.brand} ${car.title} (${car.year}) | NG'ANG'A PREMIUM LUXURY`;
-  }, [car]);
+    try {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch {
+      window.scrollTo(0, 0);
+    }
+
+    if (!car) return;
+
+    try {
+      const luxuryDesc = `${car.year || ''} ${car.brand || ''} ${car.title || ''} available at Ng'ang'a Premium Luxury Nairobi. ${car.engine || ''} ${car.power || ''}. Price: ${formatPrice(car)}. Exclusive luxury inspection, VIP bespoke delivery in East Africa.`;
+
+      updateSEO({
+        title: `${car.brand || ''} ${car.title || ''} (${car.year || ''}) | NG'ANG'A PREMIUM LUXURY`,
+        description: luxuryDesc,
+        keywords: `${car.brand || ''}, ${car.title || ''}, luxury cars Kenya, exotic cars Nairobi, ${car.brand || ''} for sale Kenya, Ng'ang'a Premium Luxury`,
+        canonicalPath: `?luxuryVehicle=${car.id || ''}`,
+        image: car.images && car.images[0] ? car.images[0] : null,
+        type: 'product',
+        jsonLd: {
+          '@context': 'https://schema.org',
+          '@type': 'Car',
+          name: `${car.brand || ''} ${car.title || ''} (${car.year || ''})`,
+          description: car.description || luxuryDesc,
+          image: car.images,
+          brand: {
+            '@type': 'Brand',
+            name: car.brand || 'Luxury',
+          },
+          model: car.title || 'Luxury Model',
+          modelDate: car.year ? car.year.toString() : '',
+          offers: {
+            '@type': 'Offer',
+            price: Number(car.priceKsh) || 0,
+            priceCurrency: 'KES',
+            availability: 'https://schema.org/InStock',
+            seller: {
+              '@type': 'AutoDealer',
+              name: "Ng'ang'a Premium Luxury",
+              telephone: '+254740596907',
+            },
+          },
+        },
+        jsonLdId: 'luxury-car-detail-jsonld',
+      });
+    } catch (e) {
+      console.warn('Luxury SEO notice:', e);
+    }
+
+    return () => {
+      try {
+        removeJsonLd('luxury-car-detail-jsonld');
+        updateSEO({});
+      } catch {}
+    };
+  }, [car, formatPrice]);
 
   // Keyboard navigation for images
   useEffect(() => {

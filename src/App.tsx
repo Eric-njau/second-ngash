@@ -12,19 +12,25 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { ArrowRight, ChevronLeft, ChevronRight, SlidersHorizontal, Sparkles } from 'lucide-react';
 
 import { LoadingOrb } from './components/LoadingOrb';
-import { prefetchCriticalImages } from './utils/cache';
+import { prefetchCriticalImages, prefetchVehicleImages, memoizeQuery } from './utils/cache';
 import { collection, onSnapshot, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
 
-// Code-split heavy routes and modals via React.lazy for instant initial load
-const VehicleDetailsPage = React.lazy(() => import('./components/VehicleDetailsPage').then(m => ({ default: m.VehicleDetailsPage })));
+import { VehicleDetailsPage } from './components/VehicleDetailsPage';
 const LuxuryCarPage = React.lazy(() => import('./components/LuxuryCarPage').then(m => ({ default: m.LuxuryCarPage })));
 const NewsEventsPage = React.lazy(() => import('./components/NewsEventsPage').then(m => ({ default: m.NewsEventsPage })));
 const ContactPage = React.lazy(() => import('./components/ContactPage').then(m => ({ default: m.ContactPage })));
 const PrivacyPolicyPage = React.lazy(() => import('./components/PrivacyPolicyPage').then(m => ({ default: m.PrivacyPolicyPage })));
 const TermsOfServicePage = React.lazy(() => import('./components/TermsOfServicePage').then(m => ({ default: m.TermsOfServicePage })));
 import { AdminDashboard, sanitizeLoadedVehicle } from './components/AdminDashboard';
-import { loadAllVehicles, getVehicleTimestamp, SYNC_EVENT_NAME } from './utils/inventoryManager';
+import {
+  loadAllVehicles,
+  getCachedVehicleById,
+  getVehicleTimestamp,
+  syncLocalVehiclesToFirestore,
+  reconcileLocalVehiclesToFirestore,
+  SYNC_EVENT_NAME
+} from './utils/inventoryManager';
 const MakeCallModal = React.lazy(() => import('./components/MakeCallModal').then(m => ({ default: m.MakeCallModal })));
 const AddListingModal = React.lazy(() => import('./components/AddListingModal').then(m => ({ default: m.AddListingModal })));
 const CartDrawer = React.lazy(() => import('./components/CartDrawer').then(m => ({ default: m.CartDrawer })));
@@ -147,7 +153,7 @@ export default function App() {
   const [selectedVehicle, setSelectedVehicle] = useState<Vehicle | null>(() => {
     const vId = getVehicleIdFromUrl();
     if (vId) {
-      return loadAllVehicles().find(v => v.id.toLowerCase() === vId.toLowerCase()) || null;
+      return getCachedVehicleById(vId);
     }
     return null;
   });
@@ -213,12 +219,22 @@ export default function App() {
   // Background Cache Warming: Prefetch top showroom car photos
   useEffect(() => {
     if (vehicles && vehicles.length > 0) {
-      const topImages = vehicles.slice(0, 10).map(v => v.image);
+      const topImages = vehicles.slice(0, 12).map(v => v.image);
       prefetchCriticalImages(topImages);
     }
   }, [vehicles]);
 
-  // Live Inventory synchronization (Local Storage events + Firestore immediate getDocs + live snapshot)
+  // Gallery Cache Warming: Prefetch high-res gallery images as soon as a vehicle is selected
+  useEffect(() => {
+    if (selectedVehicle) {
+      prefetchVehicleImages(selectedVehicle);
+    }
+  }, [selectedVehicle]);
+
+  // Track inventory network loading state
+  const [inventoryLoading, setInventoryLoading] = useState<boolean>(() => loadAllVehicles().length === 0);
+
+  // Live Real-Time Inventory synchronization across the entire internet
   useEffect(() => {
     const handleSync = () => {
       setVehicles(loadAllVehicles());
@@ -228,49 +244,48 @@ export default function App() {
     let isMounted = true;
     let unsubscribe = () => {};
 
-    // 1. Immediate fetch from Firestore for instant production loading
-    (async () => {
-      try {
-        const vehiclesRef = collection(db, 'vehicles');
-        const snap = await getDocs(vehiclesRef);
-        if (isMounted && !snap.empty) {
-          const list: Vehicle[] = [];
-          snap.forEach((doc) => {
-            list.push(sanitizeLoadedVehicle({ ...doc.data(), id: doc.id } as Vehicle));
-          });
-          setVehicles(loadAllVehicles(list));
-        }
-      } catch (err) {
-        console.warn('Initial Firestore vehicles fetch note:', err);
+    // Safety timeout: ensure loading state clears within 3.5 seconds even on slow 3G
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) {
+        setInventoryLoading(false);
       }
-    })();
+    }, 3500);
 
-    // 2. Continuous realtime listener for updates
+    // Reconcile and publish any local vehicles to Firestore cloud so they appear across the internet
+    reconcileLocalVehiclesToFirestore().catch(() => {});
+
+    // Single dedicated real-time listener: fires immediately on connection and in real time for any changes
     try {
       const vehiclesRef = collection(db, 'vehicles');
       unsubscribe = onSnapshot(
         vehiclesRef,
         (snapshot) => {
           if (!isMounted) return;
+          clearTimeout(safetyTimer);
+          const list: Vehicle[] = [];
           if (!snapshot.empty) {
-            const list: Vehicle[] = [];
             snapshot.forEach((doc) => {
               list.push(sanitizeLoadedVehicle({ ...doc.data(), id: doc.id } as Vehicle));
             });
-            setVehicles(loadAllVehicles(list));
-          } else {
-            setVehicles(loadAllVehicles());
           }
+          setVehicles(loadAllVehicles(list));
+          setInventoryLoading(false);
         },
         (error) => {
           console.warn('Firestore live vehicle sync note:', error);
           if (isMounted) {
+            clearTimeout(safetyTimer);
             setVehicles(loadAllVehicles());
+            setInventoryLoading(false);
           }
         }
       );
     } catch (err) {
       console.warn('Firestore init note:', err);
+      if (isMounted) {
+        clearTimeout(safetyTimer);
+        setInventoryLoading(false);
+      }
     }
 
     return () => {
@@ -280,8 +295,29 @@ export default function App() {
     };
   }, []);
 
-  // Shortlist / Wishlist state
-  const [wishlistVehicles, setWishlistVehicles] = useState<Vehicle[]>([]);
+  // Saved / Liked vehicles persisted in localStorage for returning visitors across the internet
+  const [likedVehicleIds, setLikedVehicleIds] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('nganga_saved_likes_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+
+  // Derived list of wishlisted vehicles from current loaded inventory
+  const wishlistVehicles = useMemo(() => {
+    if (likedVehicleIds.length === 0) return [];
+    const idSet = new Set(likedVehicleIds);
+    return vehicles.filter(v => idSet.has(v.id));
+  }, [vehicles, likedVehicleIds]);
+
+  // Standard showroom fleet (strictly excludes luxury and archived vehicles)
+  const standardVehicles = useMemo(() => {
+    return vehicles.filter(v => !v.isArchived && !v.isLuxury);
+  }, [vehicles]);
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -303,12 +339,17 @@ export default function App() {
 
   const [filters, setFilters] = useState<FilterState>(initialFilters);
 
-  // Filtered vehicles logic
+  // Filtered vehicles logic for standard showroom
   const filteredVehicles = useMemo(() => {
     return vehicles
       .filter(v => {
-        // Exclude archived vehicles from front-end showroom!
+        // Exclude archived vehicles
         if (v.isArchived) {
+          return false;
+        }
+
+        // Exclude luxury fleet vehicles from standard showroom!
+        if (v.isLuxury) {
           return false;
         }
 
@@ -400,11 +441,24 @@ export default function App() {
   };
 
   const handleToggleWishlist = (vehicle: Vehicle) => {
-    if (wishlistVehicles.some(v => v.id === vehicle.id)) {
-      setWishlistVehicles(wishlistVehicles.filter(v => v.id !== vehicle.id));
-    } else {
-      setWishlistVehicles([...wishlistVehicles, vehicle]);
-    }
+    setLikedVehicleIds(prev => {
+      const exists = prev.includes(vehicle.id);
+      const next = exists ? prev.filter(id => id !== vehicle.id) : [...prev, vehicle.id];
+      try {
+        localStorage.setItem('nganga_saved_likes_v1', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const handleRemoveFromWishlist = (id: string) => {
+    setLikedVehicleIds(prev => {
+      const next = prev.filter(item => item !== id);
+      try {
+        localStorage.setItem('nganga_saved_likes_v1', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   };
 
   const handleNavigate = (section: string) => {
@@ -612,7 +666,7 @@ export default function App() {
             onClose={() => setIsWishlistOpen(false)}
             vehicles={wishlistVehicles}
             spares={[]}
-            onRemoveVehicle={id => setWishlistVehicles(wishlistVehicles.filter(v => v.id !== id))}
+            onRemoveVehicle={handleRemoveFromWishlist}
             onRemoveSpare={() => {}}
           />
         </Suspense>
@@ -679,7 +733,7 @@ export default function App() {
             onClose={() => setIsWishlistOpen(false)}
             vehicles={wishlistVehicles}
             spares={[]}
-            onRemoveVehicle={id => setWishlistVehicles(wishlistVehicles.filter(v => v.id !== id))}
+            onRemoveVehicle={handleRemoveFromWishlist}
             onRemoveSpare={() => {}}
           />
         </Suspense>
@@ -704,7 +758,7 @@ export default function App() {
       >
         <Suspense fallback={<PageLoadingFallback />}>
           <LuxuryCarPage
-            customLuxuryVehicles={vehicles.filter(v => Boolean(v.isLuxury) && !v.isArchived)}
+            customLuxuryVehicles={vehicles.filter(v => Boolean(v.isLuxury) && !v.isArchived && !v.isCodeCar)}
             onReturnToMain={() => {
               setCurrentView('main');
               try {
@@ -755,7 +809,7 @@ export default function App() {
             onClose={() => setIsWishlistOpen(false)}
             vehicles={wishlistVehicles}
             spares={[]}
-            onRemoveVehicle={id => setWishlistVehicles(wishlistVehicles.filter(v => v.id !== id))}
+            onRemoveVehicle={handleRemoveFromWishlist}
             onRemoveSpare={() => {}}
           />
         </Suspense>
@@ -794,7 +848,7 @@ export default function App() {
             onClose={() => setIsWishlistOpen(false)}
             vehicles={wishlistVehicles}
             spares={[]}
-            onRemoveVehicle={id => setWishlistVehicles(wishlistVehicles.filter(v => v.id !== id))}
+            onRemoveVehicle={handleRemoveFromWishlist}
             onRemoveSpare={() => {}}
           />
         </Suspense>
@@ -849,7 +903,10 @@ export default function App() {
 
       {/* Main Content: Dedicated Vehicle Details Page OR Showroom Home */}
       {selectedVehicle ? (
-        <Suspense fallback={<PageLoadingFallback />}>
+        <ErrorBoundary
+          fallbackTitle="Unable to display vehicle details"
+          onReset={handleBackToShowroom}
+        >
           <VehicleDetailsPage
             vehicle={selectedVehicle}
             allVehicles={vehicles}
@@ -859,7 +916,7 @@ export default function App() {
             onAddToCart={handleToggleWishlist}
             isWishlisted={wishlistVehicles.some(v => v.id === selectedVehicle.id)}
           />
-        </Suspense>
+        </ErrorBoundary>
       ) : (
         <>
           {/* 3. Massive Cinematic Hero matching Screenshot (448) */}
@@ -944,22 +1001,33 @@ export default function App() {
             ) : (
               <div className="bg-white dark:bg-[#111622] rounded-2xl border border-slate-200 dark:border-slate-800 p-12 text-center space-y-4 shadow-sm flex flex-col items-center justify-center">
                 <LoadingOrb
-                  state="searching"
+                  state={inventoryLoading ? "working" : "searching"}
                   size={64}
                   color="#d71921"
+                  label={inventoryLoading ? "Connecting to Cloud Inventory..." : undefined}
                 />
                 <p className="text-base font-bold text-slate-800 dark:text-slate-100 mt-2">
-                  No vehicles found matching your criteria
+                  {inventoryLoading
+                    ? 'Fetching Live Showroom Inventory...'
+                    : standardVehicles.length === 0
+                    ? 'Showroom is preparing new arrivals'
+                    : 'No vehicles found matching your criteria'}
                 </p>
                 <p className="text-xs text-slate-500 dark:text-slate-400 max-w-sm mx-auto">
-                  We frequently receive fresh locally used inventory at our Kiambu Road showroom. Try clearing your filters or contact us directly to source your preferred car.
+                  {inventoryLoading
+                    ? 'Querying real-time vehicles from our Kiambu Road Firestore database...'
+                    : standardVehicles.length === 0
+                    ? "We are currently updating our Kiambu Road showroom catalog with fresh units. Contact us directly on 0740596907 for immediate vehicle sourcing."
+                    : "We frequently receive fresh inventory at our Kiambu Road showroom. Try clearing your filters or contact us directly to source your preferred car."}
                 </p>
-                <button
-                  onClick={handleResetFilters}
-                  className="bg-[#d71921] hover:bg-[#bc141b] text-white text-xs font-bold px-5 py-2.5 rounded-lg transition cursor-pointer"
-                >
-                  Reset All Filters
-                </button>
+                {standardVehicles.length > 0 && (
+                  <button
+                    onClick={handleResetFilters}
+                    className="bg-[#d71921] hover:bg-[#bc141b] text-white text-xs font-bold px-5 py-2.5 rounded-lg transition cursor-pointer"
+                  >
+                    Reset All Filters
+                  </button>
+                )}
               </div>
             )}
 
@@ -1038,7 +1106,7 @@ export default function App() {
           onClose={() => setIsWishlistOpen(false)}
           vehicles={wishlistVehicles}
           spares={[]}
-          onRemoveVehicle={id => setWishlistVehicles(wishlistVehicles.filter(v => v.id !== id))}
+          onRemoveVehicle={handleRemoveFromWishlist}
           onRemoveSpare={() => {}}
         />
       </Suspense>

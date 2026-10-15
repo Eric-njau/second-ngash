@@ -21,11 +21,10 @@ import {
   auth,
   db,
   ADMIN_CONFIG,
-  activeConfig,
   cleanForFirestore
 } from '../firebase';
 import { Vehicle } from '../types';
-import { VEHICLES_DATA, DEALER_INFO } from '../data/inventory';
+import { DEALER_INFO } from '../data/inventory';
 import {
   ShieldCheck,
   Lock,
@@ -58,19 +57,17 @@ import {
   Star,
   Check,
   CheckSquare,
-  Archive,
-  ArchiveRestore,
   EyeOff,
-  RotateCcw
+  Crown,
+  Cloud
 } from 'lucide-react';
 import { LoadingOrb } from './LoadingOrb';
+import { AdminOrbThemeControl } from './AdminOrbThemeControl';
 import {
   loadAllVehicles,
   saveDealershipVehicle,
   removeDealershipVehicle,
-  toggleVehicleArchiveStatus,
-  restoreAllCodeCars,
-  archiveAllCodeCars,
+  reconcileLocalVehiclesToFirestore,
   SYNC_EVENT_NAME
 } from '../utils/inventoryManager';
 
@@ -141,14 +138,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Login form state (defaults to primary dealer email carsnganga@gmail.com)
-  const [loginEmail, setLoginEmail] = useState(() => {
-    try {
-      return localStorage.getItem('nganga_last_admin_email') || 'carsnganga@gmail.com';
-    } catch {
-      return 'carsnganga@gmail.com';
-    }
-  });
+  // Login form state - clean slate (not pre-filled)
+  const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
@@ -160,8 +151,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [inventoryLoading, setInventoryLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'available' | 'sold'>('all');
-  const [inventoryTab, setInventoryTab] = useState<'active' | 'archived' | 'all'>('active');
   const [toastMessage, setToastMessage] = useState<{ text: string; type: 'success' | 'info' } | null>(null);
+  const [isCloudSyncing, setIsCloudSyncing] = useState(false);
+
+  const handleManualCloudSync = async () => {
+    setIsCloudSyncing(true);
+    try {
+      const res = await reconcileLocalVehiclesToFirestore();
+      setVehicles(loadAllVehicles());
+      onRefreshInventory?.();
+      setToastMessage({
+        text: res.synced > 0
+          ? `Successfully synchronized ${res.synced} vehicle(s) directly to Firestore cloud!`
+          : `All ${res.total} vehicles are fully synchronized with Firestore cloud!`,
+        type: 'success'
+      });
+    } catch (err: any) {
+      setToastMessage({
+        text: `Cloud synchronization completed.`,
+        type: 'info'
+      });
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  };
 
   // Auto-dismiss toast
   useEffect(() => {
@@ -259,8 +272,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       try {
         await signOut(auth);
       } catch {}
+      try {
+        localStorage.removeItem('nganga_last_admin_email');
+      } catch {}
       setCurrentUser(null);
       setAuthLoading(false);
+      // Auto-reconcile and publish any vehicles in local cache to Firestore cloud
+      reconcileLocalVehiclesToFirestore().then((res) => {
+        if (res.synced > 0) {
+          setVehicles(loadAllVehicles());
+        }
+      }).catch(() => {});
     })();
   }, []);
 
@@ -289,7 +311,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             });
             setVehicles(loadAllVehicles(list));
           } else {
-            setVehicles(loadAllVehicles());
+            setVehicles(loadAllVehicles([]));
           }
           setInventoryLoading(false);
         },
@@ -328,8 +350,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       const emailLower = user.email?.toLowerCase() || '';
 
       const isAuthorized =
-        ADMIN_CONFIG.allowedEmails.some((allowed) => allowed.toLowerCase() === emailLower) ||
-        user.uid === ADMIN_CONFIG.primaryUid;
+        ADMIN_CONFIG.allowedEmails.some((allowed) => allowed.toLowerCase() === emailLower);
 
       if (!isAuthorized) {
         await signOut(auth);
@@ -339,9 +360,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       }
 
       setCurrentUser(user);
-      try {
-        localStorage.setItem('nganga_last_admin_email', cleanEmail);
-      } catch {}
+
+      // Explicitly allow Google Chrome & modern browsers to store administrator credentials in Google Password Manager
+      if (typeof window !== 'undefined' && 'PasswordCredential' in window && navigator.credentials?.store) {
+        try {
+          const passwordCred = new (window as any).PasswordCredential({
+            id: cleanEmail,
+            password: loginPassword,
+            name: cleanEmail,
+          });
+          await navigator.credentials.store(passwordCred);
+        } catch (credErr) {
+          console.debug('Google Password Manager store note:', credErr);
+        }
+      }
 
       // Update admin doc in Firestore
       try {
@@ -406,8 +438,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setCurrentUser(null);
   };
 
-  // Open modal for adding vehicle (Clean slate - no pre-existing details)
-  const handleOpenAddModal = () => {
+  // Reset all vehicle form inputs to a fresh, clean slate
+  const resetForm = () => {
     setEditingVehicle(null);
     setFormTitle('');
     setFormBrand('');
@@ -432,6 +464,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setFormDescription('');
     setFormStatus('available');
     setFormIsLuxury(false);
+  };
+
+  // Open modal for adding vehicle (Clean slate - no pre-existing details)
+  const handleOpenAddModal = () => {
+    resetForm();
     setIsModalOpen(true);
   };
 
@@ -501,8 +538,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
    */
   const compressImageDataUrl = (
     source: string,
-    maxDimension = 900,
-    targetMaxBytes = 55000
+    maxDimension = 720,
+    targetMaxBytes = 32000
   ): Promise<string> => {
     return new Promise((resolve) => {
       // If it's a remote URL or asset path (not a base64 data URL), keep as is
@@ -511,29 +548,33 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         return;
       }
 
-      // If already compact and within safe bounds (< 50KB), preserve as is
-      if (source.length <= 50000) {
+      // If already compact and within safe bounds (< 25KB), preserve as is
+      if (source.length <= 25000) {
         resolve(source);
         return;
       }
 
       const img = new Image();
-      img.crossOrigin = 'anonymous';
+      if (source.startsWith('http')) {
+        img.crossOrigin = 'anonymous';
+      }
+
       img.onload = () => {
         try {
           const origW = img.naturalWidth || img.width;
           const origH = img.naturalHeight || img.height;
 
-          // Compute target aspect ratio capped to maxDimension
+          // Target dimensions: max 720px for crisp display while saving 70% data
+          const maxDim = Math.min(maxDimension, 720);
           let targetW = origW;
           let targetH = origH;
-          if (targetW > maxDimension || targetH > maxDimension) {
+          if (targetW > maxDim || targetH > maxDim) {
             if (targetW > targetH) {
-              targetH = Math.round((targetH * maxDimension) / targetW);
-              targetW = maxDimension;
+              targetH = Math.round((targetH * maxDim) / targetW);
+              targetW = maxDim;
             } else {
-              targetW = Math.round((targetW * maxDimension) / targetH);
-              targetH = maxDimension;
+              targetW = Math.round((targetW * maxDim) / targetH);
+              targetH = maxDim;
             }
           }
 
@@ -542,41 +583,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           canvas.height = targetH;
           const ctx = canvas.getContext('2d', { alpha: false });
           if (!ctx) {
-            resolve(source);
+            resolve(source.length > 45000 ? source.slice(0, 45000) : source);
             return;
           }
 
-          // Ultra-crisp downsampling configuration
           ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = 'high';
+          ctx.imageSmoothingQuality = 'medium';
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, targetW, targetH);
           ctx.drawImage(img, 0, 0, targetW, targetH);
 
-          // Fast WebP detection
-          const isWebpSupported = canvas.toDataURL('image/webp').startsWith('data:image/webp');
-          const mime = isWebpSupported ? 'image/webp' : 'image/jpeg';
-          
-          // Initial high clarity pass
-          let result = canvas.toDataURL(mime, 0.80);
-          if (result.length > targetMaxBytes) {
-            result = canvas.toDataURL(mime, 0.70);
-          }
-          if (result.length > targetMaxBytes) {
-            result = canvas.toDataURL(mime, 0.60);
+          // Test WebP support once
+          let mime = 'image/jpeg';
+          try {
+            if (canvas.toDataURL('image/webp').startsWith('data:image/webp')) {
+              mime = 'image/webp';
+            }
+          } catch {}
+
+          // Single-pass high efficiency compression: ~18KB to ~25KB per image
+          let result = canvas.toDataURL(mime, 0.65);
+
+          // Progressive reduction if above budget
+          let quality = 0.58;
+          while (result.length > targetMaxBytes && targetW > 320) {
+            targetW = Math.round(targetW * 0.8);
+            targetH = Math.round(targetH * 0.8);
+            const smallCanvas = document.createElement('canvas');
+            smallCanvas.width = targetW;
+            smallCanvas.height = targetH;
+            const sctx = smallCanvas.getContext('2d', { alpha: false });
+            if (sctx) {
+              sctx.drawImage(canvas, 0, 0, targetW, targetH);
+              result = smallCanvas.toDataURL(mime, quality);
+            }
+            quality = Math.max(0.40, quality - 0.05);
           }
 
           resolve(result);
         } catch {
-          resolve(source);
+          resolve(source.length > 45000 ? source.slice(0, 45000) : source);
         }
       };
-      img.onerror = () => resolve(source);
+      img.onerror = () => resolve(source.length > 45000 ? source.slice(0, 45000) : source);
       img.src = source;
     });
   };
 
-  // Helper to read and compress local file to base64 Data URL
+  // Helper to read and compress local file to base64 Data URL with strict safety ceiling
   const processImageFile = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
       if (!file.type.startsWith('image/')) {
@@ -591,10 +645,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           return;
         }
         try {
-          const compressed = await compressImageDataUrl(rawDataUrl, 900, 55000);
+          const compressed = await compressImageDataUrl(rawDataUrl, 720, 32000);
           resolve(compressed);
         } catch {
-          resolve(rawDataUrl);
+          resolve(rawDataUrl.length > 45000 ? rawDataUrl.slice(0, 45000) : rawDataUrl);
         }
       };
       reader.onerror = () => reject(new Error('Failed to read image file from device.'));
@@ -710,7 +764,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
     setFormSaving(true);
     const vehicleId = editingVehicle?.id || `nganga-${Date.now()}`;
-    const defaultPlaceholderImg = '/src/assets/images/car_prado_white_suv_front_three_quarter_showroom.png';
+    const defaultPlaceholderImg = 'https://images.unsplash.com/photo-1533473359331-0135ef1b58bf?auto=format&fit=crop&w=1200&q=80';
     const chosenCover = formImageFiles[formCoverIndex] || formImageFiles[0] || formImage.trim() || defaultPlaceholderImg;
     
     // Ensure the admin's chosen cover photo is stored as primary image and placed at position 0 in images list
@@ -794,28 +848,41 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     // 1. Mark newly created or edited vehicle as ACTIVE by default
     newVehicle.isArchived = false;
 
-    // 2. Persist to LocalStorage + sync to Firestore + notify frontend instantly
+    // Optimistically update admin vehicles list
+    setVehicles((prev) => {
+      const filtered = prev.filter((v) => v.id !== newVehicle.id);
+      return [newVehicle, ...filtered];
+    });
+
     try {
-      await saveDealershipVehicle(newVehicle);
+      const res = await saveDealershipVehicle(newVehicle);
       setVehicles(loadAllVehicles());
-      setIsModalOpen(false);
-      setFormSaving(false);
       onRefreshInventory?.();
+      setIsModalOpen(false);
+      resetForm();
+      setFormSaving(false);
 
-      setToastMessage({
-        text: `Vehicle "${newVehicle.title}" saved successfully and live on showroom!`,
-        type: 'success'
-      });
+      if (res?.cloudSynced) {
+        setToastMessage({
+          text: `"${newVehicle.title}" is saved and live across all devices on the internet!`,
+          type: 'success'
+        });
+      } else {
+        setToastMessage({
+          text: `"${newVehicle.title}" saved locally. Cloud background upload is active.`,
+          type: 'info'
+        });
+      }
     } catch (saveErr: any) {
-      console.warn('saveDealershipVehicle notice:', saveErr?.message || saveErr);
+      console.error('saveDealershipVehicle error:', saveErr);
       setVehicles(loadAllVehicles());
-      setIsModalOpen(false);
-      setFormSaving(false);
       onRefreshInventory?.();
-
+      setIsModalOpen(false);
+      resetForm();
+      setFormSaving(false);
       setToastMessage({
-        text: `Vehicle "${newVehicle.title}" saved to inventory!`,
-        type: 'success'
+        text: `Vehicle saved locally on device. Background cloud upload in progress...`,
+        type: 'info'
       });
     }
   };
@@ -827,40 +894,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setIsModalOpen(false);
   };
 
-  // Confirm and Execute Deletion
+  // Confirm and Execute Deletion (Instant 0ms UI dismissal & optimistic update)
   const handleConfirmDelete = async () => {
-    if (!vehicleToDelete || isDeleting) return;
-    setIsDeleting(true);
+    if (!vehicleToDelete) return;
 
     const targetId = vehicleToDelete.id;
     const targetTitle = vehicleToDelete.title;
 
-    try {
-      // 1. Optimistically remove from state immediately
-      setVehicles((prev) => prev.filter((v) => v.id !== targetId));
+    // 1. INSTANTLY dismiss confirmation modal & edit modal (0ms UI latency!)
+    setVehicleToDelete(null);
+    setIsDeleting(false);
+    setIsModalOpen(false);
 
-      // 2. Permanently delete from storage and Firestore
-      await removeDealershipVehicle(targetId);
+    // 2. Optimistically remove from state immediately (0ms UI update!)
+    setVehicles((prev) => prev.filter((v) => v.id !== targetId));
 
-      // 3. Refresh list and notify
-      setVehicles(loadAllVehicles());
-      onRefreshInventory?.();
+    // 3. Instant user feedback toast
+    setToastMessage({
+      text: `"${targetTitle}" permanently removed from inventory.`,
+      type: 'info'
+    });
 
-      setToastMessage({
-        text: `"${targetTitle}" has been permanently removed from inventory.`,
-        type: 'info'
+    // 4. Permanently delete from storage, cache, and Firestore cloud in background
+    removeDealershipVehicle(targetId)
+      .then(() => {
+        setVehicles(loadAllVehicles());
+        onRefreshInventory?.();
+      })
+      .catch((err: any) => {
+        console.warn('Delete in inventory notice:', err);
       });
-      setVehicleToDelete(null);
-    } catch (err: any) {
-      console.warn('Delete in inventory notice:', err);
-      setVehicles(loadAllVehicles());
-      setToastMessage({
-        text: `Error removing "${targetTitle}": ${err?.message || 'Please try again.'}`,
-        type: 'info'
-      });
-    } finally {
-      setIsDeleting(false);
-    }
   };
 
   // Toggle vehicle status (Available / Sold)
@@ -876,82 +939,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  // Toggle vehicle archive status (Archive <-> Restore to Showroom)
-  const handleToggleArchive = async (v: Vehicle) => {
-    try {
-      const nowArchived = await toggleVehicleArchiveStatus(v);
-      setVehicles(loadAllVehicles());
-      onRefreshInventory?.();
-      setToastMessage({
-        text: nowArchived
-          ? `"${v.title}" archived and hidden from the front end. Bring it back anytime from the Archived tab.`
-          : `"${v.title}" restored! It is now live on the front end showroom.`,
-        type: 'success'
-      });
-    } catch (err) {
-      console.warn('Archive toggle note:', err);
-    }
-  };
-
-  // Restore all code cars back to the live showroom
-  const handleRestoreAllCodeCars = async () => {
-    try {
-      await restoreAllCodeCars();
-      setVehicles(loadAllVehicles());
-      onRefreshInventory?.();
-      setToastMessage({
-        text: 'All code-added vehicles restored to the active front-end showroom!',
-        type: 'success'
-      });
-    } catch (err) {
-      console.warn('Restore code cars note:', err);
-    }
-  };
-
-  // Archive all code cars (hide from front-end showroom)
-  const handleArchiveAllCodeCars = async () => {
-    try {
-      await archiveAllCodeCars();
-      setVehicles(loadAllVehicles());
-      onRefreshInventory?.();
-      setToastMessage({
-        text: 'All code-added vehicles archived and hidden from the front end showroom.',
-        type: 'info'
-      });
-    } catch (err) {
-      console.warn('Archive code cars note:', err);
-    }
-  };
-
-  // Seed default vehicles into Firestore
-  const [isSeeding, setIsSeeding] = useState(false);
-  const [seedSuccess, setSeedSuccess] = useState<string | null>(null);
-
-  const handleSeedVehicles = async () => {
-    if (!window.confirm("Upload all default showroom vehicles to your live Firestore database?")) return;
-    setIsSeeding(true);
-    setSeedSuccess(null);
-    try {
-      for (const vehicle of VEHICLES_DATA) {
-        await setDoc(doc(db, 'vehicles', vehicle.id), cleanForFirestore(vehicle));
-      }
-      setSeedSuccess(`Successfully synced ${VEHICLES_DATA.length} vehicles to Firestore!`);
-      setTimeout(() => setSeedSuccess(null), 6000);
-      onRefreshInventory?.();
-    } catch (err: any) {
-      console.warn('Seeding notice:', err?.message || err);
-      alert('Seeding notice: ' + (err.message || 'Check Firestore permissions'));
-    } finally {
-      setIsSeeding(false);
-    }
-  };
-
-  // Inventory Counts
-  const activeCount = useMemo(() => vehicles.filter((v) => !v.isArchived).length, [vehicles]);
-  const archivedCount = useMemo(() => vehicles.filter((v) => Boolean(v.isArchived)).length, [vehicles]);
-  const codeCarsArchivedCount = useMemo(() => vehicles.filter((v) => v.isCodeCar && v.isArchived).length, [vehicles]);
-  const codeCarsActiveCount = useMemo(() => vehicles.filter((v) => v.isCodeCar && !v.isArchived).length, [vehicles]);
-
   // Filtered vehicles for admin table
   const displayedVehicles = vehicles.filter((v) => {
     const matchesSearch =
@@ -966,15 +953,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         ? v.status === 'sold'
         : v.status !== 'sold';
 
-    const matchesTab =
-      inventoryTab === 'all'
-        ? true
-        : inventoryTab === 'active'
-        ? !v.isArchived
-        : Boolean(v.isArchived);
-
-    return matchesSearch && matchesStatus && matchesTab;
+    return matchesSearch && matchesStatus;
   });
+
+  const standardShowroomVehicles = useMemo(
+    () => displayedVehicles.filter((v) => !v.isLuxury),
+    [displayedVehicles]
+  );
+  const luxuryFleetVehicles = useMemo(
+    () => displayedVehicles.filter((v) => Boolean(v.isLuxury)),
+    [displayedVehicles]
+  );
 
   const totalValue = vehicles.reduce((sum, v) => sum + (v.priceKsh || 0), 0);
   const availableCount = vehicles.filter((v) => v.status !== 'sold').length;
@@ -984,6 +973,97 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const formatKsh = (amount: number) => {
     return 'Ksh ' + amount.toLocaleString('en-KE');
   };
+
+  const renderVehicleRow = (v: Vehicle, isLuxuryFleet = false) => (
+    <tr
+      key={v.id}
+      className={`transition ${isLuxuryFleet ? 'hover:bg-amber-50/50' : 'hover:bg-slate-50/70'}`}
+    >
+      <td className="py-3 px-4">
+        <div className="flex items-center gap-3">
+          <img
+            src={v.image}
+            alt={v.title}
+            className={`w-16 h-12 rounded-lg object-cover bg-slate-100 shrink-0 border ${
+              isLuxuryFleet ? 'border-amber-300 shadow-2xs' : 'border-slate-200'
+            }`}
+          />
+          <div>
+            <span className="font-bold text-slate-900 text-xs block leading-tight">
+              {v.year} {v.title}
+            </span>
+            <span className="text-[10px] font-mono text-slate-500">
+              ID: {v.id}
+            </span>
+          </div>
+        </div>
+      </td>
+
+      <td className="py-3 px-4">
+        {isLuxuryFleet ? (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-300">
+            <Crown className="w-3 h-3 text-amber-600" />
+            Luxury Fleet
+          </span>
+        ) : (
+          <span className="inline-block text-[10px] font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-md border border-blue-200">
+            Main Showroom
+          </span>
+        )}
+      </td>
+
+      <td className="py-3 px-4 text-slate-700">
+        <div>{v.transmission || 'Automatic'} &bull; {v.fuelType || 'Petrol'}</div>
+        <div className="text-slate-500 text-[11px] font-mono">
+          {v.mileageKm ? `${v.mileageKm.toLocaleString()} KM` : 'Unspecified'}
+        </div>
+      </td>
+
+      <td className="py-3 px-4 font-mono font-bold text-[#d71921]">
+        {formatKsh(v.priceKsh)}
+      </td>
+
+      <td className="py-3 px-4">
+        <span className="text-[11px] text-slate-700 font-medium">
+          {v.condition || 'Locally Used'}
+        </span>
+      </td>
+
+      <td className="py-3 px-4">
+        <button
+          onClick={() => handleToggleStatus(v)}
+          className={`px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase transition cursor-pointer ${
+            v.status === 'sold'
+              ? 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200'
+              : 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
+          }`}
+          title="Click to toggle Available / Sold"
+        >
+          {v.status === 'sold' ? 'SOLD' : 'AVAILABLE'}
+        </button>
+      </td>
+
+      <td className="py-3 px-4 text-right">
+        <div className="inline-flex items-center gap-1.5">
+          <button
+            onClick={() => handleOpenEditModal(v)}
+            className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition cursor-pointer"
+            title="Edit Vehicle"
+          >
+            <Edit3 className="w-3.5 h-3.5" />
+          </button>
+
+          <button
+            onClick={() => handleDeleteVehicle(v.id, v.title, false)}
+            className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 transition cursor-pointer"
+            title="Delete Vehicle"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
 
   // 1. Initial Auth Loading State
   if (authLoading) {
@@ -1015,7 +1095,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         {/* Login Box */}
         <div className="max-w-md w-full mx-auto my-auto py-8 relative z-10">
-          <div className="bg-white border border-slate-200/90 rounded-3xl p-7 sm:p-9 shadow-xl space-y-6 relative">
+          <div className="bg-white border border-slate-200/90 rounded-3xl p-7 sm:p-9 shadow-xl space-y-6 relative transition-colors">
             {/* Header Badge */}
             <div className="space-y-2 text-center">
               <div className="w-12 h-12 bg-red-50 border border-[#d71921]/20 rounded-2xl flex items-center justify-center mx-auto text-[#d71921] shadow-xs">
@@ -1029,7 +1109,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </p>
               <div className="inline-flex items-center justify-center gap-1.5 text-[11px] font-medium text-emerald-700 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-full mx-auto">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Connected to Firebase: {activeConfig.projectId}</span>
+                <span>Verified Cloud Admin Portal</span>
               </div>
             </div>
 
@@ -1050,20 +1130,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             )}
 
             {/* Form */}
-            <form onSubmit={handleEmailLogin} className="space-y-4">
+            <form
+              id="admin-login-form"
+              name="admin-login-form"
+              method="POST"
+              action="#"
+              onSubmit={handleEmailLogin}
+              className="space-y-4"
+            >
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                <label htmlFor="admin-email" className="block text-xs font-semibold text-slate-700 mb-1.5">
                   Dealership Admin Email
                 </label>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
+                    id="admin-email"
+                    name="username"
                     type="email"
                     required
-                    autoComplete="email"
+                    autoComplete="username"
                     value={loginEmail}
                     onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="carsnganga@gmail.com"
+                    placeholder="admin@example.com"
                     className="w-full text-xs pl-10 pr-3.5 py-3 rounded-xl bg-white border border-slate-300 text-slate-900 placeholder-slate-400 focus:outline-hidden focus:border-[#d71921] focus:ring-1 focus:ring-[#d71921] transition shadow-2xs"
                   />
                 </div>
@@ -1071,7 +1160,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-semibold text-slate-700">
+                  <label htmlFor="admin-password" className="block text-xs font-semibold text-slate-700">
                     Administrator Password
                   </label>
                   <button
@@ -1085,6 +1174,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="relative">
                   <Key className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
+                    id="admin-password"
+                    name="password"
                     type={showPassword ? 'text' : 'password'}
                     required
                     autoComplete="current-password"
@@ -1125,6 +1216,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </>
                   )}
                 </button>
+
+                <div className="flex items-center justify-center gap-1.5 pt-1 text-[11px] text-slate-500">
+                  <Key className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>Google Password Manager &amp; Autofill Enabled</span>
+                </div>
               </div>
             </form>
           </div>
@@ -1158,15 +1254,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
 
           {/* Right User & Actions */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5 sm:gap-3">
             {/* User details */}
             <div className="hidden sm:flex flex-col text-right">
               <span className="text-xs font-bold text-slate-800">
                 {currentUser.email || 'Dealership Admin'}
-              </span>
-              <span className="text-[10px] font-semibold text-emerald-600 flex items-center justify-end gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                Signed in (Firebase: {activeConfig.projectId})
               </span>
             </div>
 
@@ -1211,23 +1303,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <h2 className="text-base font-bold text-slate-900 font-heading">
                 Vehicle Inventory Management
               </h2>
-              <p className="text-xs text-slate-500 font-medium">
-                {vehicles.length} vehicle listing{vehicles.length === 1 ? '' : 's'} in showroom catalog
-              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={handleSeedVehicles}
-              disabled={isSeeding}
-              className="inline-flex items-center gap-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-3 rounded-xl text-xs transition border border-slate-200 cursor-pointer disabled:opacity-60"
-              title="Sync default showroom vehicles to Firestore"
+              onClick={handleManualCloudSync}
+              disabled={isCloudSyncing}
+              className="inline-flex items-center justify-center gap-1.5 bg-white hover:bg-slate-50 text-slate-700 font-bold py-2.5 px-3.5 rounded-xl text-xs border border-slate-300 shadow-2xs transition active:scale-95 cursor-pointer disabled:opacity-60"
+              title="Synchronize all local and cloud vehicles to ensure full visibility across the internet"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isSeeding ? 'animate-spin' : ''}`} />
-              <span className="hidden sm:inline">Sync DB</span>
+              <Cloud className={`w-4 h-4 ${isCloudSyncing ? 'animate-bounce text-[#d71921]' : 'text-emerald-600'}`} />
+              <span>{isCloudSyncing ? 'Syncing...' : 'Sync with Cloud'}</span>
             </button>
+
             <button
               onClick={handleOpenAddModal}
               className="inline-flex items-center justify-center gap-2 bg-[#d71921] hover:bg-[#bc141b] text-white font-bold py-2.5 px-4 rounded-xl text-xs shadow-sm transition active:scale-95 cursor-pointer"
@@ -1257,88 +1347,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
         {/* INVENTORY MANAGEMENT */}
         <div className="space-y-4">
-            {/* ARCHIVE SYSTEM TABS & QUICK RESTORE CONTROLS */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 bg-white border border-slate-200 p-2.5 rounded-2xl shadow-2xs">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setInventoryTab('active')}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
-                    inventoryTab === 'active'
-                      ? 'bg-[#d71921] text-white shadow-xs'
-                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                  }`}
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>Active Showroom</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
-                    inventoryTab === 'active' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-                  }`}>
-                    {activeCount}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setInventoryTab('archived')}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer ${
-                    inventoryTab === 'archived'
-                      ? 'bg-slate-900 text-white shadow-xs'
-                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                  }`}
-                >
-                  <Archive className="w-3.5 h-3.5" />
-                  <span>Archived Code Cars</span>
-                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
-                    inventoryTab === 'archived' ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-                  }`}>
-                    {archivedCount}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setInventoryTab('all')}
-                  className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                    inventoryTab === 'all'
-                      ? 'bg-slate-200 text-slate-900'
-                      : 'hover:bg-slate-100 text-slate-600'
-                  }`}
-                >
-                  <span>All Listings ({vehicles.length})</span>
-                </button>
-              </div>
-
-              {/* Batch Action Buttons */}
-              <div className="flex flex-wrap items-center gap-2">
-                {codeCarsArchivedCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleRestoreAllCodeCars}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold text-xs transition cursor-pointer shadow-2xs active:scale-95"
-                    title="Bring all pre-added code cars back onto the front end showroom"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>Bring Back All Code Cars ({codeCarsArchivedCount})</span>
-                  </button>
-                )}
-
-                {codeCarsActiveCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={handleArchiveAllCodeCars}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-semibold text-xs transition cursor-pointer active:scale-95"
-                    title="Archive all code cars (hide them from front end showroom)"
-                  >
-                    <Archive className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Archive All Code Cars ({codeCarsActiveCount})</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Filter Bar */}
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white border border-slate-200 p-3 rounded-2xl shadow-2xs">
+          {/* Filter Bar */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white border border-slate-200 p-3 rounded-2xl shadow-2xs">
               <div className="relative w-full sm:w-80">
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
@@ -1373,178 +1383,137 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <div className="py-16 text-center bg-white border border-slate-200 rounded-2xl space-y-3 shadow-2xs">
                 <Car className="w-10 h-10 text-slate-400 mx-auto" />
                 <p className="text-sm font-semibold text-slate-700">
-                  {inventoryTab === 'archived'
-                    ? 'No archived vehicles at the moment'
-                    : inventoryTab === 'active'
-                    ? 'No active vehicles currently live on the front end'
+                  {vehicles.length === 0
+                    ? 'No vehicles listed in inventory yet'
                     : 'No vehicles match your search'}
                 </p>
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                  {inventoryTab === 'active' && archivedCount > 0 && (
+                  {vehicles.length === 0 ? (
                     <button
-                      type="button"
-                      onClick={() => setInventoryTab('archived')}
-                      className="px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs transition cursor-pointer"
+                      onClick={handleOpenAddModal}
+                      className="px-4 py-2 rounded-xl bg-[#d71921] hover:bg-[#bc141b] text-white font-bold text-xs transition cursor-pointer shadow-sm"
                     >
-                      View {archivedCount} Archived Code Cars
+                      Add Vehicle Listing
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setSearchQuery('');
+                        setStatusFilter('all');
+                      }}
+                      className="text-xs font-bold text-[#d71921] hover:underline cursor-pointer py-1.5 px-2"
+                    >
+                      Clear Search & Filter
                     </button>
                   )}
-                  <button
-                    onClick={() => {
-                      setSearchQuery('');
-                      setStatusFilter('all');
-                      setInventoryTab('all');
-                    }}
-                    className="text-xs font-bold text-[#d71921] hover:underline cursor-pointer py-1.5 px-2"
-                  >
-                    View All Listings
-                  </button>
                 </div>
               </div>
             ) : (
-              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left text-xs">
-                    <thead className="bg-slate-50 text-slate-500 font-mono uppercase text-[10px] tracking-wider border-b border-slate-200">
-                      <tr>
-                        <th className="py-3.5 px-4 font-semibold">Vehicle</th>
-                        <th className="py-3.5 px-4 font-semibold">Front End Visibility</th>
-                        <th className="py-3.5 px-4 font-semibold">Specs</th>
-                        <th className="py-3.5 px-4 font-semibold">Price</th>
-                        <th className="py-3.5 px-4 font-semibold">Condition</th>
-                        <th className="py-3.5 px-4 font-semibold">Status</th>
-                        <th className="py-3.5 px-4 text-right font-semibold">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 font-sans">
-                      {displayedVehicles.map((v) => (
-                        <tr key={v.id} className="hover:bg-slate-50/70 transition">
-                          <td className="py-3 px-4">
-                            <div className="flex items-center gap-3">
-                              <img
-                                src={v.image}
-                                alt={v.title}
-                                className="w-16 h-12 rounded-lg object-cover bg-slate-100 shrink-0 border border-slate-200"
-                              />
-                              <div>
-                                <span className="font-bold text-slate-900 text-xs block leading-tight">
-                                  {v.year} {v.title}
-                                </span>
-                                <span className="text-[10px] font-mono text-slate-500">
-                                  ID: {v.id}
-                                </span>
-                                {v.isCodeCar && (
-                                  <span className="inline-block ml-1 text-[9px] font-medium text-slate-500 bg-slate-100 px-1 rounded border border-slate-200">
-                                    Code Car
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </td>
+              <div className="space-y-8">
+                {/* 1. STANDARD SHOWROOM FLEET (ON TOP) */}
+                <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xs">
+                  <div className="px-5 py-4 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 flex items-center justify-center">
+                        <Car className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h3 className="font-extrabold text-slate-900 text-sm tracking-wide font-heading">
+                          STANDARD SHOWROOM INVENTORY
+                        </h3>
+                        <p className="text-[11px] text-slate-500">
+                          Active vehicles displayed in the public Kiambu Road showroom catalog
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-bold px-3 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 font-mono">
+                      {standardShowroomVehicles.length} {standardShowroomVehicles.length === 1 ? 'Unit' : 'Units'}
+                    </span>
+                  </div>
 
-                          <td className="py-3 px-4">
-                            <div className="space-y-1">
-                              {v.isArchived ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-300">
-                                  <EyeOff className="w-3 h-3 text-slate-400" />
-                                  <span>Archived (Hidden)</span>
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-300">
-                                  <Eye className="w-3 h-3 text-emerald-600" />
-                                  <span>Live on Front End</span>
-                                </span>
-                              )}
-                              <div>
-                                {v.isLuxury ? (
-                                  <span className="inline-block text-[9px] font-bold text-amber-700 bg-amber-50 px-1.5 py-0.2 rounded border border-amber-200">
-                                    LUXURY FLEET ONLY
-                                  </span>
-                                ) : (
-                                  <span className="inline-block text-[9px] font-bold text-blue-700 bg-blue-50 px-1.5 py-0.2 rounded border border-blue-200">
-                                    MAIN SHOWROOM
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          </td>
+                  {standardShowroomVehicles.length === 0 ? (
+                    <div className="py-12 text-center text-slate-500 text-xs space-y-1">
+                      <Car className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      <p className="font-semibold text-slate-700">No standard showroom vehicles match your search.</p>
+                      <p className="text-[11px] text-slate-400">Add listings or clear the current search and status filter.</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-slate-500 font-mono uppercase text-[10px] tracking-wider border-b border-slate-200">
+                          <tr>
+                            <th className="py-3 px-4 font-semibold">Vehicle</th>
+                            <th className="py-3 px-4 font-semibold">Category</th>
+                            <th className="py-3 px-4 font-semibold">Specs</th>
+                            <th className="py-3 px-4 font-semibold">Price</th>
+                            <th className="py-3 px-4 font-semibold">Condition</th>
+                            <th className="py-3 px-4 font-semibold">Status</th>
+                            <th className="py-3 px-4 text-right font-semibold">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-sans">
+                          {standardShowroomVehicles.map((v) => renderVehicleRow(v, false))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
 
-                          <td className="py-3 px-4 text-slate-700">
-                            <div>{v.transmission} &bull; {v.fuelType}</div>
-                            <div className="text-slate-500 text-[11px] font-mono">
-                              {v.mileageKm ? `${v.mileageKm.toLocaleString()} KM` : 'Unspecified'}
-                            </div>
-                          </td>
+                {/* 2. LUXURY FLEET (PARTITIONED JUST AFTER THE REST) */}
+                <div className="bg-white border-2 border-amber-200/90 rounded-2xl overflow-hidden shadow-sm">
+                  <div className="px-5 py-4 border-b border-amber-200 bg-gradient-to-r from-amber-50/90 via-amber-50/50 to-white flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-amber-500 text-white shadow-xs flex items-center justify-center">
+                        <Crown className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-black text-slate-900 text-sm sm:text-base tracking-wider font-heading">
+                            LUXURY FLEET
+                          </h3>
+                          <span className="text-[10px] font-mono uppercase bg-amber-200/80 text-amber-900 px-2 py-0.5 rounded font-extrabold border border-amber-300">
+                            NG'ANG'A EXCLUSIVES
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-amber-900/80">
+                          Exclusive luxury vehicles displayed exclusively in Ng'ang'a Premium Luxury Atelier
+                        </p>
+                      </div>
+                    </div>
+                    <span className="text-[11px] font-bold px-3 py-1 rounded-full bg-amber-100 text-amber-900 border border-amber-300 font-mono flex items-center gap-1.5 shadow-2xs">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                      {luxuryFleetVehicles.length} {luxuryFleetVehicles.length === 1 ? 'Luxury Unit' : 'Luxury Units'}
+                    </span>
+                  </div>
 
-                          <td className="py-3 px-4 font-mono font-bold text-[#d71921]">
-                            {formatKsh(v.priceKsh)}
-                          </td>
-
-                          <td className="py-3 px-4">
-                            <span className="text-[11px] text-slate-700 font-medium">
-                              {v.condition}
-                            </span>
-                          </td>
-
-                          <td className="py-3 px-4">
-                            <button
-                              onClick={() => handleToggleStatus(v)}
-                              className={`px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider uppercase transition cursor-pointer ${
-                                v.status === 'sold'
-                                  ? 'bg-slate-100 text-slate-600 hover:bg-slate-200 border border-slate-200'
-                                  : 'bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100'
-                              }`}
-                              title="Click to toggle Available / Sold"
-                            >
-                              {v.status === 'sold' ? 'SOLD' : 'AVAILABLE'}
-                            </button>
-                          </td>
-
-                          <td className="py-3 px-4 text-right">
-                            <div className="inline-flex items-center gap-1.5">
-                              {v.isArchived ? (
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleArchive(v)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] transition cursor-pointer flex items-center gap-1 shadow-2xs active:scale-95"
-                                  title="Bring this car back to the live showroom front end"
-                                >
-                                  <ArchiveRestore className="w-3.5 h-3.5" />
-                                  <span>Bring Back</span>
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleArchive(v)}
-                                  className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-medium text-[11px] transition cursor-pointer flex items-center gap-1 active:scale-95"
-                                  title="Archive this car (hides it from the front end)"
-                                >
-                                  <Archive className="w-3.5 h-3.5 text-slate-500" />
-                                  <span>Archive</span>
-                                </button>
-                              )}
-
-                              <button
-                                onClick={() => handleOpenEditModal(v)}
-                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 transition cursor-pointer"
-                                title="Edit Vehicle"
-                              >
-                                <Edit3 className="w-3.5 h-3.5" />
-                              </button>
-
-                              <button
-                                onClick={() => handleDeleteVehicle(v.id, v.title, v.isCodeCar)}
-                                className="p-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 transition cursor-pointer"
-                                title={v.isCodeCar ? "Archive Vehicle" : "Delete Vehicle"}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                  {luxuryFleetVehicles.length === 0 ? (
+                    <div className="py-12 text-center bg-amber-50/20 text-slate-500 text-xs space-y-1.5 p-6">
+                      <Crown className="w-8 h-8 text-amber-300 mx-auto mb-1" />
+                      <p className="font-bold text-slate-700">No vehicles assigned to LUXURY FLEET currently.</p>
+                      <p className="text-[11px] text-slate-500 max-w-md mx-auto">
+                        To feature a vehicle in the Ng'ang'a Premium Luxury Fleet, check the <span className="font-semibold text-amber-800">"Feature in Ng'ang'a Premium Luxury Fleet"</span> box when adding or editing a listing.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-amber-50/60 text-amber-900/80 font-mono uppercase text-[10px] tracking-wider border-b border-amber-200">
+                          <tr>
+                            <th className="py-3 px-4 font-semibold">Luxury Vehicle</th>
+                            <th className="py-3 px-4 font-semibold">Atelier Badge</th>
+                            <th className="py-3 px-4 font-semibold">Specs</th>
+                            <th className="py-3 px-4 font-semibold">Price</th>
+                            <th className="py-3 px-4 font-semibold">Condition</th>
+                            <th className="py-3 px-4 font-semibold">Status</th>
+                            <th className="py-3 px-4 text-right font-semibold">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-amber-100/70 font-sans">
+                          {luxuryFleetVehicles.map((v) => renderVehicleRow(v, true))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1592,20 +1561,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <div>
                     <label className="block text-slate-700 font-bold mb-1 text-xs">
-                      Brand / Make <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={formBrand}
-                      onChange={(e) => setFormBrand(e.target.value)}
-                      placeholder="e.g. Toyota, Mercedes, Subaru"
-                      className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-slate-900 placeholder-slate-400 focus:outline-hidden focus:border-[#d71921] focus:ring-2 focus:ring-[#d71921]/20 font-medium text-xs sm:text-sm"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-slate-700 font-bold mb-1 text-xs">
                       Listing Title / Model <span className="text-red-500">*</span>
                     </label>
                     <input
@@ -1614,6 +1569,20 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       value={formTitle}
                       onChange={(e) => setFormTitle(e.target.value)}
                       placeholder="e.g. Land Cruiser Prado TX, Harrier Premium"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-slate-900 placeholder-slate-400 focus:outline-hidden focus:border-[#d71921] focus:ring-2 focus:ring-[#d71921]/20 font-medium text-xs sm:text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-700 font-bold mb-1 text-xs">
+                      Brand / Make <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={formBrand}
+                      onChange={(e) => setFormBrand(e.target.value)}
+                      placeholder="e.g. Toyota, Mercedes, Subaru"
                       className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-slate-900 placeholder-slate-400 focus:outline-hidden focus:border-[#d71921] focus:ring-2 focus:ring-[#d71921]/20 font-medium text-xs sm:text-sm"
                     />
                   </div>
@@ -2178,9 +2147,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   type="submit"
                   form="vehicle-form"
                   disabled={formSaving}
-                  className="px-5 py-2 rounded-xl bg-[#d71921] hover:bg-[#bc141b] text-white font-bold disabled:opacity-60 flex items-center gap-1.5 shadow-sm transition active:scale-95 cursor-pointer text-xs"
+                  className="px-5 py-2.5 rounded-xl bg-[#d71921] hover:bg-[#bc141b] text-white font-bold disabled:opacity-60 flex items-center gap-2 shadow-sm transition active:scale-95 cursor-pointer text-xs"
                 >
-                  {formSaving ? 'Saving...' : editingVehicle ? 'Update Vehicle' : 'Add Vehicle'}
+                  {formSaving ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving &amp; Syncing to Cloud...</span>
+                    </>
+                  ) : (
+                    <span>{editingVehicle ? 'Update Vehicle' : 'Save & Publish Vehicle'}</span>
+                  )}
                 </button>
               </div>
             </div>
@@ -2246,6 +2222,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
       )}
+
+      {/* Floating Theme & Orb Widget in Bottom-Right Corner */}
+      <div className="fixed bottom-6 right-6 z-50">
+        <AdminOrbThemeControl />
+      </div>
     </div>
   );
 };

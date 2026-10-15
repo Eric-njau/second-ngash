@@ -1,6 +1,12 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { initializeFirestore, getFirestore } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  getFirestore,
+  memoryLocalCache,
+  doc,
+  getDocFromServer
+} from 'firebase/firestore';
 import defaultFirebaseConfig from '../firebase-applet-config.json';
 
 export interface FirebaseProjectConfigShape {
@@ -13,45 +19,73 @@ export interface FirebaseProjectConfigShape {
   messagingSenderId?: string;
 }
 
-// Load active Firebase configuration (prioritizes cinecore-a2ceb when configured)
-export function getStoredCinecoreConfig(): FirebaseProjectConfigShape | null {
-  if (typeof window !== 'undefined') {
-    const raw = localStorage.getItem('cinecore_firebase_config');
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed.apiKey && (parsed.projectId === 'cinecore-a2ceb' || parsed.projectId)) {
-          return parsed;
-        }
-      } catch (e) {}
-    }
-  }
-  return null;
+// Clean up any legacy API keys previously saved in localStorage
+if (typeof window !== 'undefined') {
+  try {
+    localStorage.removeItem('cinecore_firebase_config');
+  } catch {}
 }
 
-export const activeConfig: FirebaseProjectConfigShape = defaultFirebaseConfig;
+// Read credentials safely from environment with fallback to applet config
+const env = (typeof import.meta !== 'undefined' && import.meta.env) ? import.meta.env : ({} as Record<string, string | undefined>);
+
+const resolvedConfig: FirebaseProjectConfigShape = {
+  projectId: env.VITE_FIREBASE_PROJECT_ID || defaultFirebaseConfig.projectId || 'cinecore-a2ceb',
+  appId: env.VITE_FIREBASE_APP_ID || defaultFirebaseConfig.appId,
+  apiKey: env.VITE_FIREBASE_API_KEY || defaultFirebaseConfig.apiKey || '',
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || defaultFirebaseConfig.authDomain,
+  firestoreDatabaseId: env.VITE_FIREBASE_DATABASE_ID || (defaultFirebaseConfig as any).firestoreDatabaseId || '(default)',
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || defaultFirebaseConfig.storageBucket,
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || defaultFirebaseConfig.messagingSenderId,
+};
 
 // Initialize Firebase App
-const app = getApps().length === 0 ? initializeApp(activeConfig) : getApp();
-
-// Initialize Firestore with database ID specified in config (defaults to standard Firestore instance)
-// Enabled ignoreUndefinedProperties: true to prevent "Unsupported field value: undefined" errors
-const firestoreDatabaseId =
-  (activeConfig as any).firestoreDatabaseId &&
-  (activeConfig as any).firestoreDatabaseId !== '(default)'
-    ? (activeConfig as any).firestoreDatabaseId
-    : undefined;
-
-let firestoreInstance;
+let app: any;
 try {
-  firestoreInstance = initializeFirestore(app, {
-    ignoreUndefinedProperties: true
-  }, firestoreDatabaseId);
-} catch (e) {
-  firestoreInstance = firestoreDatabaseId ? getFirestore(app, firestoreDatabaseId) : getFirestore(app);
+  app = getApps().length === 0 ? initializeApp(resolvedConfig) : getApp();
+} catch (initErr) {
+  console.warn('Firebase App initialization note:', initErr);
+  app = getApps().length > 0 ? getApp() : initializeApp(defaultFirebaseConfig);
+}
+
+// Initialize Firestore per SKILL.md
+let firestoreInstance: any;
+try {
+  firestoreInstance = getFirestore(app, resolvedConfig.firestoreDatabaseId || '(default)');
+} catch (fsErr) {
+  console.warn('Firestore initialization fallback:', fsErr);
+  try {
+    firestoreInstance = getFirestore(app);
+  } catch {
+    firestoreInstance = {} as any;
+  }
+}
+
+// Validate Firestore connectivity on startup per SKILL.md
+if (typeof window !== 'undefined' && firestoreInstance) {
+  try {
+    getDocFromServer(doc(firestoreInstance, 'test', 'connection')).catch((error) => {
+      if (error instanceof Error && error.message.includes('the client is offline')) {
+        console.warn('Firestore offline notice: please verify network or Firebase project configuration.');
+      }
+    });
+  } catch {}
 }
 
 export const db = firestoreInstance;
+
+let authInstance: any;
+try {
+  authInstance = getAuth(app);
+} catch (authErr) {
+  console.warn('Firebase Auth fallback notice:', authErr);
+  authInstance = {
+    currentUser: null,
+    onAuthStateChanged: () => () => {},
+  } as any;
+}
+
+export const auth = authInstance;
 
 /**
  * Recursively strips undefined keys and nested undefined values from an object
@@ -76,84 +110,11 @@ export function cleanForFirestore<T extends Record<string, any>>(obj: T): Record
   return result;
 }
 
-export const auth = getAuth(app);
-
-// Save cinecore-a2ceb configuration
-export function saveCinecoreConfig(config: FirebaseProjectConfigShape) {
-  if (typeof window !== 'undefined') {
-    localStorage.setItem('cinecore_firebase_config', JSON.stringify(config));
-    window.location.reload();
-  }
-}
-
-// Reset to default provisioned configuration
-export function resetToDefaultConfig() {
-  if (typeof window !== 'undefined') {
-    localStorage.removeItem('cinecore_firebase_config');
-    window.location.reload();
-  }
-}
-
-// Smart parser for Firebase configuration inputs (supports raw API key or full code snippet)
-export function parseFirebaseConfigInput(input: string): FirebaseProjectConfigShape | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-
-  // 1. Raw API key (e.g. AIzaSy...)
-  if (/^AIzaSy[a-zA-Z0-9_\-]{30,}/.test(trimmed)) {
-    return {
-      projectId: 'cinecore-a2ceb',
-      apiKey: trimmed,
-      authDomain: 'cinecore-a2ceb.firebaseapp.com',
-      storageBucket: 'cinecore-a2ceb.firebasestorage.app',
-      appId: ''
-    };
-  }
-
-  // 2. JavaScript / JSON config snippet
-  const apiKeyMatch = trimmed.match(/apiKey\s*[:=]\s*["']([^"']+)["']/);
-  const projectIdMatch = trimmed.match(/projectId\s*[:=]\s*["']([^"']+)["']/);
-  const appIdMatch = trimmed.match(/appId\s*[:=]\s*["']([^"']+)["']/);
-  const authDomainMatch = trimmed.match(/authDomain\s*[:=]\s*["']([^"']+)["']/);
-  const storageBucketMatch = trimmed.match(/storageBucket\s*[:=]\s*["']([^"']+)["']/);
-  const messagingSenderIdMatch = trimmed.match(/messagingSenderId\s*[:=]\s*["']([^"']+)["']/);
-
-  if (apiKeyMatch && apiKeyMatch[1]) {
-    return {
-      projectId: (projectIdMatch && projectIdMatch[1]) || 'cinecore-a2ceb',
-      apiKey: apiKeyMatch[1],
-      appId: (appIdMatch && appIdMatch[1]) || '',
-      authDomain: (authDomainMatch && authDomainMatch[1]) || 'cinecore-a2ceb.firebaseapp.com',
-      storageBucket: (storageBucketMatch && storageBucketMatch[1]) || 'cinecore-a2ceb.firebasestorage.app',
-      messagingSenderId: (messagingSenderIdMatch && messagingSenderIdMatch[1]) || ''
-    };
-  }
-
-  // 3. Raw JSON object
-  try {
-    const json = JSON.parse(trimmed);
-    if (json.apiKey) {
-      return {
-        projectId: json.projectId || 'cinecore-a2ceb',
-        apiKey: json.apiKey,
-        appId: json.appId || '',
-        authDomain: json.authDomain || 'cinecore-a2ceb.firebaseapp.com',
-        storageBucket: json.storageBucket || 'cinecore-a2ceb.firebasestorage.app',
-        messagingSenderId: json.messagingSenderId || ''
-      };
-    }
-  } catch (e) {}
-
-  return null;
-}
-
 // Designated Admin constants provided by dealership
 export const ADMIN_CONFIG = {
   primaryUid: 'zu4znCRWYfZ0DauQEJw6DRg0LH62',
   allowedEmails: [
-    'carsnganga@gmail.com',
-    'kamaualex063@gmail.com',
-    'ericw9836@gmail.com'
+    'carsnganga@gmail.com'
   ],
   adminRoute: '/ngashkrd2012',
 };
@@ -178,15 +139,26 @@ export interface FirestoreErrorInfo {
   };
 }
 
+/**
+ * Safely sanitizes error messages so no API keys, tokens, or credential strings are printed to logs
+ */
+function sanitizeErrorMessage(msg: string): string {
+  if (!msg) return '';
+  return msg
+    .replace(/AIza[0-9A-Za-z-_]{35}/g, '[REDACTED_API_KEY]')
+    .replace(/(?:apiKey|key)=[^&\s]+/gi, 'key=[REDACTED]');
+}
+
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+  const rawMsg = error instanceof Error ? error.message : String(error);
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: sanitizeErrorMessage(rawMsg),
     operationType,
     path,
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
     },
   };
   console.warn('Firestore Notice:', JSON.stringify(errInfo));
